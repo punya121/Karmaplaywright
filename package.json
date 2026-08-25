@@ -1,0 +1,21 @@
+{
+  "name": "playwright",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:patient-registration": "playwright test tests/patient-registration.spec.ts --project=chromium",
+    "test:patient-registration:headed": "playwright test tests/patient-registration.spec.ts --headed --project=chromium",
+    "test:patient-case-history:headed": "playwright test tests/patient-case-history.spec.ts --headed --project=chromium"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.1.2"
+  }
+}
