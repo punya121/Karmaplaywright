@@ -5,10 +5,15 @@
   "main": "index.js",
   "scripts": {
     "test": "playwright test",
+    "report": "playwright show-report",
     "test:headed": "playwright test --headed",
-    "test:patient-registration": "playwright test tests/patient-registration.spec.ts --project=chromium",
-    "test:patient-registration:headed": "playwright test tests/patient-registration.spec.ts --headed --project=chromium",
-    "test:patient-case-history:headed": "playwright test tests/patient-case-history.spec.ts --headed --project=chromium"
+    "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
+    "test:login-negative": "playwright test tests/auth/login-negative.spec.ts --project=chromium",
+    "test:patient-registration": "playwright test tests/patient/patient-registration.spec.ts --project=chromium",
+    "test:patient-registration:headed": "playwright test tests/patient/patient-registration.spec.ts --headed --project=chromium",
+    "test:patient-registration-save": "playwright test tests/patient/patient-registration-save.spec.ts --project=chromium",
+    "test:patient-registration-save:headed": "playwright test tests/patient/patient-registration-save.spec.ts --headed --project=chromium",
+    "test:patient-case-history:headed": "playwright test tests/patient/patient-case-history.spec.ts --headed --project=chromium"
   },
   "keywords": [],
   "author": "",

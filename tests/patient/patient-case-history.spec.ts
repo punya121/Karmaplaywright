@@ -3,20 +3,11 @@ import {
   validPassword,
   validUsername,
 } from '../config/test-env';
+import { LoginPage } from '../pages/login.page';
 
 test('Patient registration then case history', async ({ page }) => {
-  await page.goto('https://sandbox.karmaprimaryhealthcare.in/Login');
-
-  await page.getByRole('textbox', { name: 'Username' }).fill(validUsername);
-  await page.getByPlaceholder('Enter your password').fill(validPassword);
-  await page.getByRole('button', { name: 'Login' }).click();
-
-  const activeSessionMessage = page.getByText(/already have \d+ active sessions/i);
-  if (await activeSessionMessage.isVisible({ timeout: 5000 }).catch(() => false)) {
-    throw new Error('Login blocked: the account has too many active sessions. Log out another session and retry.');
-  }
-
-  await page.getByRole('link', { name: 'Home' }).waitFor({ state: 'visible', timeout: 10000 });
+  const loginPage = new LoginPage(page);
+  await loginPage.loginExpectingHome(validUsername, validPassword);
 
   await page.locator('a').filter({ hasText: /^Registration$/ }).click();
   await page.getByRole('link', { name: '» Patient' }).click();

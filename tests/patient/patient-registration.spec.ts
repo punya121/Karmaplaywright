@@ -1,26 +1,13 @@
-import { test, expect } from '@playwright/test';
+import { test } from '@playwright/test';
 import {
     validPassword,
     validUsername,
 } from '../config/test-env';
+import { LoginPage } from '../pages/login.page';
 
 test('Patient Registration', async ({ page }) => {
-
-    await page.goto('https://sandbox.karmaprimaryhealthcare.in/Login');
-
-    // Enter Username
-    await page.getByRole('textbox', { name: 'Username' })
-        .fill(validUsername);
-
-    // Enter Password
-    await page.getByPlaceholder('Enter your password')
-        .fill(validPassword);
-
-    // Click Login
-    await page.getByRole('button', { name: 'Login' }).click();
-
-    // Wait for dashboard
-    await page.waitForTimeout(5000);
+    const loginPage = new LoginPage(page);
+    await loginPage.loginExpectingHome(validUsername, validPassword);
 
     // Click Registration
     await page.locator('a')
@@ -64,7 +51,7 @@ test('Patient Registration', async ({ page }) => {
         .click();
 
     await page.locator('div')
-        .filter({ hasText: /^Bhondsi$/ })
+        .filter({ hasText: /^Dhaula$/ })
         .click();
 
     // Outreach

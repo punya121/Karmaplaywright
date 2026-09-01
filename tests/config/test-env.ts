@@ -13,3 +13,4 @@ export const validPassword = requiredEnvironmentVariable('E2E_PASSWORD');
 export const inactiveUsername = requiredEnvironmentVariable('E2E_INACTIVE_USERNAME');
 export const inactivePassword = requiredEnvironmentVariable('E2E_INACTIVE_PASSWORD');
 export const wrongPassword = requiredEnvironmentVariable('E2E_WRONG_PASSWORD');
+export const baseUrl = process.env['E2E_BASE_URL'] || 'https://app.karmaprimaryhealthcare.in';
