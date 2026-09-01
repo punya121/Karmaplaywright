@@ -1,10 +1,14 @@
 import { test } from '@playwright/test';
+import {
+  validPassword,
+  validUsername,
+} from '../config/test-env';
 
 test('Patient registration then case history', async ({ page }) => {
   await page.goto('https://sandbox.karmaprimaryhealthcare.in/Login');
 
-  await page.getByRole('textbox', { name: 'Username' }).fill('bhondsi');
-  await page.getByPlaceholder('Enter your password').fill('Sandbox@1234');
+  await page.getByRole('textbox', { name: 'Username' }).fill(validUsername);
+  await page.getByPlaceholder('Enter your password').fill(validPassword);
   await page.getByRole('button', { name: 'Login' }).click();
 
   const activeSessionMessage = page.getByText(/already have \d+ active sessions/i);

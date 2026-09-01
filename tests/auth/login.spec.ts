@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { validUsername, validPassword } from './auth.config';
 
 test('User Login', async ({ page }) => {
 
@@ -6,11 +7,11 @@ test('User Login', async ({ page }) => {
 
     // Enter Username
     await page.getByRole('textbox', { name: 'Username' })
-    .fill('bhondsi');
+    .fill(validUsername);
 
     // Enter Password
     await page.getByPlaceholder('Enter your password')
-        .fill('Sandbox@1234');
+        .fill(validPassword);
 
     // Pause
     //await page.pause();

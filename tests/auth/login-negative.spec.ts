@@ -1,18 +1,15 @@
 import { test, expect, Page } from '@playwright/test';
+import {
+    inactivePassword,
+    inactiveUsername,
+    validPassword,
+    validUsername,
+} from './auth.config';
+import { wrongPassword } from '../config/test-env';
 
 const LOGIN_URL = 'https://sandbox.karmaprimaryhealthcare.in/Login';
 
 // Valid active user
-const validUsername = 'bhondsi';
-const validPassword = 'Sandbox@1234';
-
-// Wrong password test
-const wrongPassword = 'WrongPassword123';
-
-// Inactive user test
-const inactiveUsername = 'inactive_user';
-const inactivePassword = 'Sandbox@1234';
-
 // Common error message pattern
 const loginErrorText = /invalid|inactive|already|active|error|failed|incorrect|wrong/i;
 

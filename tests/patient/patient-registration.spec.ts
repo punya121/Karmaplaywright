@@ -1,4 +1,8 @@
 import { test, expect } from '@playwright/test';
+import {
+    validPassword,
+    validUsername,
+} from '../config/test-env';
 
 test('Patient Registration', async ({ page }) => {
 
@@ -6,11 +10,11 @@ test('Patient Registration', async ({ page }) => {
 
     // Enter Username
     await page.getByRole('textbox', { name: 'Username' })
-        .fill('bhondsi');
+        .fill(validUsername);
 
     // Enter Password
     await page.getByPlaceholder('Enter your password')
-        .fill('Sandbox@1234');
+        .fill(validPassword);
 
     // Click Login
     await page.getByRole('button', { name: 'Login' }).click();
