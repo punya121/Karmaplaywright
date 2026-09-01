@@ -13,7 +13,9 @@
     "test:patient-registration:headed": "playwright test tests/patient/patient-registration.spec.ts --headed --project=chromium",
     "test:patient-registration-save": "playwright test tests/patient/patient-registration-save.spec.ts --project=chromium",
     "test:patient-registration-save:headed": "playwright test tests/patient/patient-registration-save.spec.ts --headed --project=chromium",
-    "test:patient-case-history:headed": "playwright test tests/patient/patient-case-history.spec.ts --headed --project=chromium"
+    "test:patient-case-history:headed": "playwright test tests/patient/patient-case-history.spec.ts --headed --project=chromium",
+    "test:tibet-patient-registration-save": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --project=chromium",
+    "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium"
   },
   "keywords": [],
   "author": "",
