@@ -1,48 +1,33 @@
-import { expect, test, Locator } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { validPassword, validUsername } from '../config/test-env';
 import { createSavePatient } from '../data/patients';
+import { CaseHistoryPage } from '../pages/case-history.page';
 import { LoginPage } from '../pages/login.page';
 import { RegistrationPage } from '../pages/registration.page';
-
-function matchExactText(value: string) {
-    return new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-}
-
-async function selectDropdownOption(
-    page: any,
-    field: string | Locator,
-    optionText?: string
-) {
-    const input =
-        typeof field === 'string'
-            ? page.getByRole('textbox', { name: field }).first()
-            : field;
-
-    await input.click();
-
-    const options = page.locator('.selectize-dropdown:visible .option');
-    await expect(options.first()).toBeVisible({ timeout: 10000 });
-
-    const option = optionText
-        ? options.filter({ hasText: matchExactText(optionText) }).first()
-        : options.nth(Math.floor(Math.random() * (await options.count())));
-
-    await expect(option).toBeVisible({ timeout: 10000 });
-    await option.click();
-}
 
 test.describe('Patient registration case history', () => {
     test.describe.configure({ mode: 'serial' });
 
+    // Registration plus 3-4 symptoms and 3-4 PoC tests, each a selectize round trip,
+    // runs well past the default — more so with slowMo on for a demo.
+    test.setTimeout(300000);
+
+    test.afterEach(async ({ page }) => {
+        await new LoginPage(page).logout();
+    });
+
     test('adds a case history for a dynamically created patient', async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new RegistrationPage(page);
+        const caseHistoryPage = new CaseHistoryPage(page);
         const patient = createSavePatient();
         const caseHistory = patient.caseHistory;
 
         if (!caseHistory) {
             throw new Error('Patient case history data is missing from createSavePatient()');
         }
+
+        const dialogMessages = caseHistoryPage.captureDialogs();
 
         await loginPage.loginExpectingHome(validUsername, validPassword);
         await registrationPage.openFromHome();
@@ -51,69 +36,12 @@ test.describe('Patient registration case history', () => {
         await registrationPage.fillPatient(patient, { fillAadhaar: aadhaarRequired });
 
         await page.getByRole('button', { name: 'Add Case History' }).click();
-        await expect(page.getByRole('button', { name: 'Save' })).toBeVisible({ timeout: 15000 });
+        await caseHistoryPage.expectLoaded();
 
-        await selectDropdownOption(page, '--Select a Nursing Staff--');
-        await selectDropdownOption(page, '--Select a Transport Mode--');
+        const summary = await caseHistoryPage.fill(caseHistory);
+        expect(summary.symptoms).toHaveLength(caseHistory.symptomCount);
+        expect(summary.tests).toHaveLength(caseHistory.testCount);
 
-        await page.locator('#weight').fill(caseHistory.weight);
-        await page.locator('#height').fill(caseHistory.height);
-        await page.locator('#high_bp').fill(caseHistory.highBp);
-        await page.locator('#low_bp').fill(caseHistory.lowBp);
-        await page.locator('#pulse').fill(caseHistory.pulse);
-        await page.locator('#temperature').fill(caseHistory.temperature);
-        await page.locator('#respiratory_rate').fill(caseHistory.respiratoryRate);
-        await page.locator('input[name="spo2"]').fill(caseHistory.spo2);
-
-        const symptomTable = page.getByRole('table').filter({ hasText: 'Allergies : Known Not Known *' });
-        const symptomRows = symptomTable
-            .locator('table tr')
-            .filter({ has: page.locator('.selectize-input') });
-        const randomSymptomOption = Math.floor(Math.random() * 5);
-        console.log(`Adding ${randomSymptomOption} symptoms for patient ${patient.name}`);
-        for (let i = 0; i < randomSymptomOption; i++) {
-            const symptomRow = symptomRows.nth(i);
-            const rowDropdowns = symptomRow.locator('.selectize-input');
-            const dropdownCount = await rowDropdowns.count();
-
-            for (let dropdownIndex = 0; dropdownIndex < dropdownCount; dropdownIndex++) {
-                await selectDropdownOption(page, rowDropdowns.nth(dropdownIndex));
-            }
-
-            if (i < randomSymptomOption - 1) {
-                await page.getByRole('button', { name: 'Add Symptom' }).click();
-                await expect(symptomRows).toHaveCount(i + 2);
-            }
-        }
-        
-        await selectDropdownOption(
-            page,
-            page.getByRole('textbox', { name: 'Test' }).first(),
-            caseHistory.testName
-        );
-
-        const firstTestResultField = page.locator('.selectize-control.test_result_value input').first();
-        await expect(firstTestResultField).toBeVisible({ timeout: 10000 });
-        await firstTestResultField.fill(caseHistory.testValue);
-
-        await page.getByRole('button', { name: 'Add a test' }).click();
-
-        await selectDropdownOption(
-            page,
-            page.getByRole('textbox', { name: 'Test' }).last(),
-            caseHistory.followUpTestName
-        );
-
-        const followUpValueInput = page.locator('input[name="1"]').first();
-        if (await followUpValueInput.isVisible({ timeout: 2000 }).catch(() => false)) {
-            await followUpValueInput.fill(caseHistory.followUpTestValue);
-        }
-
-        page.once('dialog', async (dialog) => {
-            console.log(`Dialog message: ${dialog.message()}`);
-            await dialog.dismiss().catch(() => undefined);
-        });
-
-        await page.getByRole('button', { name: 'Save' }).click();
+        await caseHistoryPage.saveAndExpectNextPage(dialogMessages);
     });
 });
