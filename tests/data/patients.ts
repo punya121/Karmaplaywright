@@ -17,17 +17,11 @@ const testNameOptions = [
     '[PoC] Random Blood Sugar Strip Test',
 ];
 
-// Random from the valid first-option values already confirmed in the app dropdowns.
-const transportOptions = ['Car'];
-const nursingStaffOptions = ['Amita'];
-
 function pickRandom<T>(items: T[]): T {
     return items[Math.floor(Math.random() * items.length)];
 }
 
 export type PatientCaseHistoryData = {
-    nursingStaff: string;
-    transportMode: string;
     weight: string;
     height: string;
     highBp: string;
@@ -81,8 +75,6 @@ export function createSavePatient(): PatientRegistrationData {
         mobile: `9${suffix.padStart(9, '0').slice(-9)}`,
         aadhaar: `99999${suffix.slice(-7).padStart(7, '0')}`,
         caseHistory: {
-            nursingStaff: pickRandom(nursingStaffOptions),
-            transportMode: pickRandom(transportOptions),
             weight: '85',
             height: '176',
             highBp: '90',

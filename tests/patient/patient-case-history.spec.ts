@@ -11,7 +11,7 @@ function matchExactText(value: string) {
 async function selectDropdownOption(
     page: any,
     field: string | Locator,
-    optionText: string
+    optionText?: string
 ) {
     const input =
         typeof field === 'string'
@@ -20,10 +20,12 @@ async function selectDropdownOption(
 
     await input.click();
 
-    const option = page
-        .locator('.selectize-dropdown:visible .option')
-        .filter({ hasText: matchExactText(optionText) })
-        .first();
+    const options = page.locator('.selectize-dropdown:visible .option');
+    await expect(options.first()).toBeVisible({ timeout: 10000 });
+
+    const option = optionText
+        ? options.filter({ hasText: matchExactText(optionText) }).first()
+        : options.nth(Math.floor(Math.random() * (await options.count())));
 
     await expect(option).toBeVisible({ timeout: 10000 });
     await option.click();
@@ -51,8 +53,8 @@ test.describe('Patient registration case history', () => {
         await page.getByRole('button', { name: 'Add Case History' }).click();
         await expect(page.getByRole('button', { name: 'Save' })).toBeVisible({ timeout: 15000 });
 
-        await selectDropdownOption(page, '--Select a Nursing Staff--', caseHistory.nursingStaff);
-        await selectDropdownOption(page, '--Select a Transport Mode--', caseHistory.transportMode);
+        await selectDropdownOption(page, '--Select a Nursing Staff--');
+        await selectDropdownOption(page, '--Select a Transport Mode--');
 
         await page.locator('#weight').fill(caseHistory.weight);
         await page.locator('#height').fill(caseHistory.height);
@@ -63,22 +65,27 @@ test.describe('Patient registration case history', () => {
         await page.locator('#respiratory_rate').fill(caseHistory.respiratoryRate);
         await page.locator('input[name="spo2"]').fill(caseHistory.spo2);
 
-        await page.locator('.selectize-input.items.required.not-full').first().click();
-        await page.getByText(caseHistory.symptom, { exact: true }).click();
+        const symptomTable = page.getByRole('table').filter({ hasText: 'Allergies : Known Not Known *' });
+        const symptomRows = symptomTable
+            .locator('table tr')
+            .filter({ has: page.locator('.selectize-input') });
+        const randomSymptomOption = Math.floor(Math.random() * 5);
+        console.log(`Adding ${randomSymptomOption} symptoms for patient ${patient.name}`);
+        for (let i = 0; i < randomSymptomOption; i++) {
+            const symptomRow = symptomRows.nth(i);
+            const rowDropdowns = symptomRow.locator('.selectize-input');
+            const dropdownCount = await rowDropdowns.count();
 
-        await page.getByRole('table').filter({ hasText: 'Allergies : Known Not Known *' }).click();
-        await selectDropdownOption(
-            page,
-            page.getByRole('textbox', { name: 'Time Duration' }).first(),
-            caseHistory.symptomDurationUnit
-        );
-        await selectDropdownOption(
-            page,
-            page.getByRole('textbox', { name: 'Severity' }).first(),
-            caseHistory.symptomSeverity
-        );
-        await page.getByRole('button', { name: 'Add Symptom' }).click();
+            for (let dropdownIndex = 0; dropdownIndex < dropdownCount; dropdownIndex++) {
+                await selectDropdownOption(page, rowDropdowns.nth(dropdownIndex));
+            }
 
+            if (i < randomSymptomOption - 1) {
+                await page.getByRole('button', { name: 'Add Symptom' }).click();
+                await expect(symptomRows).toHaveCount(i + 2);
+            }
+        }
+        
         await selectDropdownOption(
             page,
             page.getByRole('textbox', { name: 'Test' }).first(),
