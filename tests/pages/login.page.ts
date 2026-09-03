@@ -36,4 +36,14 @@ export class LoginPage {
         await this.login(username, password);
         await this.expectHome();
     }
+
+    /**
+     * The account allows only a handful of concurrent sessions, so a run that just
+     * closes the browser burns a slot until the server expires it. Always log out.
+     */
+    async logout(): Promise<void> {
+        await this.page
+            .goto(`${baseUrl.replace(/\/$/, '')}/Home/logout`)
+            .catch(() => undefined);
+    }
 }
