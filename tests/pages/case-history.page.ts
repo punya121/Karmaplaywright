@@ -1,5 +1,12 @@
 import { expect, type Locator, type Page } from '@playwright/test';
+
 import type { PatientCaseHistoryData } from '../data/patients';
+
+/**
+ * E2E_HOLD_OPEN=1 (with --headed) parks the run at page.pause() the moment Save's popup
+ * has been OK'd, leaving the browser open on the result instead of moving on and closing.
+ */
+const holdOpen = !!process.env.E2E_HOLD_OPEN;
 
 function randomNumber(min: number, max: number): string {
     return String(Math.floor(Math.random() * (max - min + 1)) + min);
@@ -68,15 +75,20 @@ export class CaseHistoryPage {
     constructor(private readonly page: Page) {}
 
     /**
-     * The form validates through native alert() dialogs, which Playwright dismisses
-     * silently by default — the submit is cancelled and nothing on the page says so.
+     * The form talks through two kinds of native dialog, and they need opposite answers:
+     * alert() reports a validation failure and cancels the submit, while confirm()
+     * ("Do you want to save ...?") is the save asking to go ahead. Playwright dismisses
+     * every dialog by default, which answers that confirm with Cancel and silently kills
+     * the save — so accept confirms, and record only the alerts as blockers.
      * Call this before filling so a blocked Save can name its own reason.
      */
     captureDialogs(): string[] {
         const messages: string[] = [];
         this.page.on('dialog', async (dialog) => {
-            messages.push(dialog.message().trim());
-            await dialog.dismiss().catch(() => undefined);
+            if (dialog.type() === 'alert') {
+                messages.push(dialog.message().trim());
+            }
+            await dialog.accept().catch(() => undefined);
         });
         return messages;
     }
@@ -420,6 +432,14 @@ export class CaseHistoryPage {
         // cancelled — fail on its message now rather than waiting out a navigation that
         // is never coming.
         this.throwIfAlerted(dialogMessages, alertsBefore, formUrl);
+
+        if (holdOpen) {
+            // Save is clicked and its "Do you want to save ...?" popup has been answered
+            // with OK. Stop right here so the browser stays on what the save produced —
+            // no next-page wait, and the spec skips its logout. Resume to end the run.
+            await page.pause();
+            return;
+        }
 
         const movedOn = await page
             .waitForURL((url) => url.toString() !== formUrl, { timeout: 30000 })

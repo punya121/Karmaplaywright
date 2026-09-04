@@ -12,14 +12,25 @@ test.use({
     launchOptions: { slowMo: Number(process.env.E2E_SLOW_MO ?? 800) },
 });
 
+// Set E2E_HOLD_OPEN=1 (with --headed) to keep the browser open: the run parks inside
+// CaseHistoryPage.saveAndExpectNextPage the moment Save's popup has been OK'd, so the
+// result can be checked by hand. Resume the Inspector to end the run.
+const holdOpen = !!process.env.E2E_HOLD_OPEN;
+
 test.describe('Existing patient case history', () => {
     test.describe.configure({ mode: 'serial' });
 
     // 3-4 symptoms and 3-4 PoC tests, each a selectize round trip, run well past the
-    // default — and at demo pace each one takes several seconds.
-    test.setTimeout(600000);
+    // default — and at demo pace each one takes several seconds. Holding the browser
+    // open waits on a person, so nothing can be allowed to time out.
+    test.setTimeout(holdOpen ? 0 : 600000);
 
     test.afterEach(async ({ page }) => {
+        // Logging out would navigate away from what the hold is there to show.
+        if (holdOpen) {
+            return;
+        }
+
         await new LoginPage(page).logout();
     });
 
