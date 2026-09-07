@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "playwright test",
-    "report": "playwright show-report",
+    "test:report": "playwright test",
+    "report": "playwright show-report reports/playwright-report",
     "test:headed": "playwright test --headed",
     "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
     "test:login-negative": "playwright test tests/auth/login-negative.spec.ts --project=chromium",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.2",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0"
   }
 }

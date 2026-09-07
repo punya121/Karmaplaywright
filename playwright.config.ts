@@ -34,8 +34,19 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
-  /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: 'html',
+  /* Reporter to use. See https://playwright.dev/docs/test-reporters
+   *
+   *  - list                  : the usual per-test lines in the terminal
+   *  - html                  : the standard Playwright report; `npx playwright show-report`
+   *                            still works, it just lives under reports/playwright-report now
+   *  - module-report-reporter: reports/test-results.json + reports/Test-Execution-Report.xlsx
+   *                            (module-wise Excel — see reporting/README.md)
+   */
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'reports/playwright-report', open: 'never' }],
+    ['./reporting/module-report-reporter.ts'],
+  ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     baseURL: (process.env.E2E_BASE_URL || 'https://uat.karmaprimaryhealthcare.in').replace(/\/$/, ''),
