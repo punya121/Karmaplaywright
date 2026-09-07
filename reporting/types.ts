@@ -51,6 +51,8 @@ export interface RunTotals {
 }
 
 export interface ReportPayload {
+    /** Folder name of this run under reports/runs/, e.g. `2026-09-07_14-32-05`. */
+    runId: string;
     generatedAt: string;
     startedAt: string;
     durationMs: number;

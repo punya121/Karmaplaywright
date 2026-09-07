@@ -4,7 +4,14 @@ node_modules/
 .env
 /test-results/
 /playwright-report/
-/reports/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Test reports — every run is archived under reports/runs/<run id>/
+# (HTML report + test-results.json + Test-Execution-Report.xlsx) and the whole
+# history stays local. Nothing under reports/ is ever committed.
+/reports/
+
+# Excel lock files left behind when a report workbook is open
+~$*.xlsx

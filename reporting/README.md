@@ -5,26 +5,58 @@ separate command to remember.
 
 ## What gets produced
 
+Every run is archived in its own folder, so a new run never overwrites an older
+one — the full history stays on disk:
+
 ```
 reports/
-├── test-results.json            enriched JSON (module, status, duration, error, retry)
-├── Test-Execution-Report.xlsx   Summary + Test Details workbook
-└── playwright-report/           the standard Playwright HTML report
+└── runs/
+    ├── history.json                          one entry per run (totals, duration, status)
+    ├── 2026-09-07_14-32-05/
+    │   ├── test-results.json                 enriched JSON (module, status, duration, error, retry)
+    │   ├── Test-Execution-Report.xlsx        Summary + Test Details workbook
+    │   └── playwright-report/                the standard Playwright HTML report
+    └── 2026-09-07_16-04-11/
+        └── ...
 ```
 
-Open the HTML report the usual way:
+`reports/` is gitignored, so none of this is ever committed.
+
+Open a report:
 
 ```bash
-npx playwright show-report reports/playwright-report
-# or
-npm run report
+npm run report                              # newest run
+npm run report -- 2026-09-07_14-32-05       # a specific run
+npm run report:list                         # every run kept on disk
 ```
+
+`npx playwright show-report reports/runs/<run id>/playwright-report` works too.
+
+## Naming a run yourself
+
+The folder name is a timestamp by default. Set `E2E_RUN_ID` to name it instead —
+handy in CI, where the build number is more meaningful than the clock:
+
+```bash
+E2E_RUN_ID=build-482 npx playwright test
+```
+
+Re-running with an id that already exists overwrites just that run's folder and
+replaces its entry in `history.json`; every other run is left alone.
+
+## Housekeeping
+
+Nothing is deleted automatically — that is the point. When the folder gets large,
+delete old run folders (and their `history.json` entries) by hand, or drop the
+whole `reports/runs/` folder to start fresh.
 
 ## Files
 
 | File | What it does |
 | --- | --- |
-| `module-report-reporter.ts` | The Playwright reporter. Collects results, writes the JSON, calls the Excel writer. |
+| `module-report-reporter.ts` | The Playwright reporter. Collects results, writes the JSON, calls the Excel writer, appends to `history.json`. |
+| `run-context.ts` | The per-run id and folder paths, shared with `playwright.config.ts`. |
+| `show-latest-report.js` | Backs `npm run report` / `npm run report:list`. |
 | `module-resolver.ts` | Decides which module a test belongs to. |
 | `excel-writer.ts` | Builds the workbook (styling, filters, freeze panes, data bars). |
 | `module-map.ts` | The only file you may ever need to edit — folder → module name overrides. |

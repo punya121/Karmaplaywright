@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 import dotenv from 'dotenv';
 import path from 'path';
+import { RUN_ID, relativeToCwd, runPath } from './reporting/run-context';
 
 /**
  * Read environment variables from file.
@@ -37,15 +38,18 @@ export default defineConfig({
   /* Reporter to use. See https://playwright.dev/docs/test-reporters
    *
    *  - list                  : the usual per-test lines in the terminal
-   *  - html                  : the standard Playwright report; `npx playwright show-report`
-   *                            still works, it just lives under reports/playwright-report now
-   *  - module-report-reporter: reports/test-results.json + reports/Test-Execution-Report.xlsx
-   *                            (module-wise Excel — see reporting/README.md)
+   *  - html                  : the standard Playwright report
+   *  - module-report-reporter: enriched JSON + module-wise Excel workbook
+   *                            (see reporting/README.md)
+   *
+   * Every run writes into its own folder — reports/runs/<run id>/ — so previous
+   * runs are kept instead of being overwritten. `npm run report` opens the newest
+   * one. reports/ is gitignored, so the history never lands in the repo.
    */
   reporter: [
     ['list'],
-    ['html', { outputFolder: 'reports/playwright-report', open: 'never' }],
-    ['./reporting/module-report-reporter.ts'],
+    ['html', { outputFolder: relativeToCwd(runPath('playwright-report')), open: 'never' }],
+    ['./reporting/module-report-reporter.ts', { runId: RUN_ID }],
   ],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {

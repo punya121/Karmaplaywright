@@ -104,7 +104,8 @@ function buildSummarySheet(workbook: ExcelJS.Workbook, payload: ReportPayload): 
     subtitle.value =
         `Executed: ${new Date(payload.startedAt).toLocaleString()}` +
         `   |   Run duration: ${formatDuration(payload.durationMs)}` +
-        `   |   Environment: ${payload.baseURL}`;
+        `   |   Environment: ${payload.baseURL}` +
+        (payload.runId ? `   |   Run: ${payload.runId}` : '');
     subtitle.font = { italic: true, size: 10, color: { argb: 'FF44546A' } };
     subtitle.alignment = { horizontal: 'center', vertical: 'middle' };
     sheet.getRow(2).height = 20;

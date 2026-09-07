@@ -6,7 +6,8 @@
   "scripts": {
     "test": "playwright test",
     "test:report": "playwright test",
-    "report": "playwright show-report reports/playwright-report",
+    "report": "node reporting/show-latest-report.js",
+    "report:list": "node reporting/show-latest-report.js --list",
     "test:headed": "playwright test --headed",
     "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
     "test:login-negative": "playwright test tests/auth/login-negative.spec.ts --project=chromium",
