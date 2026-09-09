@@ -15,3 +15,7 @@ node_modules/
 
 # Excel lock files left behind when a report workbook is open
 ~$*.xlsx
+
+# Recordings from tools/record.js: raw clicks, and whatever password was typed
+# while recording. The tools themselves are committed; their output never is.
+/tools/recorded/

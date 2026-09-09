@@ -8,12 +8,62 @@ import type { PatientCaseHistoryData } from '../data/patients';
  */
 const holdOpen = !!process.env.E2E_HOLD_OPEN;
 
-function randomNumber(min: number, max: number): string {
-    return String(Math.floor(Math.random() * (max - min + 1)) + min);
-}
-
 function pickRandom<T>(items: T[]): T {
     return items[Math.floor(Math.random() * items.length)];
+}
+
+/** The band a PoC test calls normal, as its row states it. */
+type NormalRange = { min: number; max: number; decimals: number };
+
+function decimalsIn(...numbers: string[]): number {
+    return Math.min(2, Math.max(...numbers.map((value) => (value.split('.')[1] ?? '').length)));
+}
+
+/**
+ * Picking a PoC test fills its Normal Value box with the band the app considers
+ * normal for it, written as "12 - 16", " <= 5", a single value, or — for tests whose
+ * result is not a number at all — something worded like "Sinus Rhythm". A result
+ * outside the test's allowed range makes the form refuse to save ("Value of a POC
+ * test is Out Of Range!"), and one merely outside the normal band raises an abnormal
+ * alert, so a run reads the band and stays inside it.
+ */
+function parseNormalRange(text: string): NormalRange | null {
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) {
+        return null;
+    }
+
+    const number = String.raw`-?\d+(?:\.\d+)?`;
+
+    const band = new RegExp(String.raw`^(${number})\s*-\s*(${number})$`).exec(cleaned);
+    if (band) {
+        return { min: Number(band[1]), max: Number(band[2]), decimals: decimalsIn(band[1], band[2]) };
+    }
+
+    const atMost = new RegExp(String.raw`^<\s*=?\s*(${number})$`).exec(cleaned);
+    if (atMost) {
+        return { min: 0, max: Number(atMost[1]), decimals: decimalsIn(atMost[1]) };
+    }
+
+    const atLeast = new RegExp(String.raw`^>\s*=?\s*(${number})$`).exec(cleaned);
+    if (atLeast) {
+        const floor = Number(atLeast[1]);
+        return { min: floor, max: floor + Math.max(1, Math.abs(floor) * 0.1), decimals: decimalsIn(atLeast[1]) };
+    }
+
+    const exact = new RegExp(`^(${number})$`).exec(cleaned);
+    if (exact) {
+        return { min: Number(exact[1]), max: Number(exact[1]), decimals: decimalsIn(exact[1]) };
+    }
+
+    return null;
+}
+
+function valueWithin(range: NormalRange): string {
+    const raw = range.min + Math.random() * (range.max - range.min);
+    const rounded = Number(raw.toFixed(range.decimals));
+    const clamped = Math.min(range.max, Math.max(range.min, rounded));
+    return clamped.toFixed(range.decimals);
 }
 
 async function isVisibleWithin(locator: Locator, timeout: number): Promise<boolean> {
@@ -154,16 +204,25 @@ export class CaseHistoryPage {
      * caller can pick a different test instead of failing over the app's own gap.
      */
     private async enterTestResult(
+        testRow: Locator,
         resultCell: Locator,
         min: number,
         max: number
     ): Promise<TestResult | null> {
+        // Fall back on the spec's own range only for a test that states no numeric
+        // band of its own (its normal value is worded, or it never renders one).
+        const band =
+            (await this.normalRangeFor(testRow)) ??
+            ({ min, max, decimals: 0 } satisfies NormalRange);
+        const numericValue = () => valueWithin(band);
+
         const numericResult = resultCell.getByRole('spinbutton').first();
         if (await isVisibleWithin(numericResult, 10000)) {
-            const value = randomNumber(min, max);
-            return (await tryTypeValue(numericResult, value))
-                ? { value, verifyAsText: false }
-                : null;
+            const value = numericValue();
+            if (!(await tryTypeValue(numericResult, value))) {
+                return null;
+            }
+            return (await this.isOutOfRange(testRow)) ? null : { value, verifyAsText: false };
         }
 
         const resultField = resultCell.locator('input:not([disabled])').first();
@@ -176,8 +235,11 @@ export class CaseHistoryPage {
         );
 
         if (!isSelectize) {
-            const value = randomNumber(min, max);
-            return (await tryTypeValue(resultField, value)) ? { value, verifyAsText: false } : null;
+            const value = numericValue();
+            if (!(await tryTypeValue(resultField, value))) {
+                return null;
+            }
+            return (await this.isOutOfRange(testRow)) ? null : { value, verifyAsText: false };
         }
 
         // A selectize collapses its input to zero width, so open it through the wrapper
@@ -204,12 +266,55 @@ export class CaseHistoryPage {
         // No preset outcomes: a free-text selectize only turns the typed query into a
         // value once Enter commits it as an item. Where the control refuses even that,
         // the test has no usable Result field.
-        const value = randomNumber(min, max);
+        const value = numericValue();
         await resultField.fill('');
         await resultField.pressSequentially(value, { delay: 30 });
         await resultField.press('Enter');
         await this.page.keyboard.press('Escape');
-        return (await holdsText(resultCell, value)) ? { value, verifyAsText: true } : null;
+        if (!(await holdsText(resultCell, value)) || (await this.isOutOfRange(testRow))) {
+            return null;
+        }
+        return { value, verifyAsText: true };
+    }
+
+    /**
+     * The Normal Value box the row fills in once its test is chosen. It is populated
+     * asynchronously, so give it a moment before reading it.
+     */
+    private async normalRangeFor(testRow: Locator): Promise<NormalRange | null> {
+        const normalValue = testRow.locator('[id^="inputTestNormalValue"]').first();
+
+        if (!(await normalValue.count())) {
+            return null;
+        }
+
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const stated = (await normalValue.inputValue().catch(() => '')) ?? '';
+            const range = parseNormalRange(stated);
+            if (range) {
+                return range;
+            }
+            if (stated.trim()) {
+                // The test states a worded normal ("Sinus Rhythm"): nothing to stay inside.
+                return null;
+            }
+            await this.page.waitForTimeout(500);
+        }
+
+        return null;
+    }
+
+    /**
+     * The form marks a result it will not accept with an "incorrect" note in the row,
+     * and refuses to save while one is on screen. Catching it here lets the caller
+     * swap the test out instead of finding out at Save.
+     */
+    private async isOutOfRange(testRow: Locator): Promise<boolean> {
+        return testRow
+            .locator('.abnormalRange')
+            .first()
+            .isVisible({ timeout: 1000 })
+            .catch(() => false);
     }
 
     async fill(caseHistory: PatientCaseHistoryData): Promise<CaseHistorySummary> {
@@ -291,6 +396,19 @@ export class CaseHistoryPage {
             await page.keyboard.press('Escape');
             await expect(symptomRow).toContainText(symptom, { useInnerText: true });
 
+            // The rest of the row is filled left to right, the order it is read and
+            // entered on screen: how long the symptom has lasted, the unit that number
+            // is counted in, then how bad it is.
+
+            // "Duration" is a selectize control too, not a free-text box: typing only
+            // fills its search query, which is thrown away on blur. Pick an option.
+            const duration = await this.selectRandomOption(
+                symptomRow.getByRole('textbox', { name: 'Duration', exact: true }),
+                /^\d/
+            );
+            durations.push(duration);
+            await expect(symptomRow).toContainText(duration, { useInnerText: true });
+
             const durationUnit = await this.selectRandomOption(
                 symptomRow.getByRole('textbox', { name: 'Time Duration' }),
                 /^(?!--)\S/,
@@ -306,15 +424,6 @@ export class CaseHistoryPage {
                 true
             );
             await expect(symptomRow).toContainText(severity, { useInnerText: true });
-
-            // "Duration" is a selectize control too, not a free-text box: typing only
-            // fills its search query, which is thrown away on blur. Pick an option.
-            const duration = await this.selectRandomOption(
-                symptomRow.getByRole('textbox', { name: 'Duration', exact: true }),
-                /^\d/
-            );
-            durations.push(duration);
-            await expect(symptomRow).toContainText(duration, { useInnerText: true });
 
             if (index < count - 1) {
                 await page.getByRole('button', { name: 'Add Symptom' }).click();
@@ -376,7 +485,7 @@ export class CaseHistoryPage {
                 await page.keyboard.press('Escape');
                 await expect(testRow).toContainText(selectedTest, { useInnerText: true });
 
-                result = await this.enterTestResult(resultCell, min, max);
+                result = await this.enterTestResult(testRow, resultCell, min, max);
 
                 if (result === null) {
                     rejected.push(selectedTest);

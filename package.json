@@ -7,6 +7,9 @@
     "test": "playwright test",
     "test:report": "playwright test",
     "report": "node reporting/show-latest-report.js",
+    "inspect": "node tools/inspect-page.js",
+    "record": "node tools/record.js",
+    "codegen": "playwright codegen https://uat.karmaprimaryhealthcare.in/Login",
     "report:list": "node reporting/show-latest-report.js --list",
     "test:headed": "playwright test --headed",
     "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
@@ -18,6 +21,8 @@
     "test:patient-case-history:headed": "playwright test tests/patient/patient-case-history.spec.ts --headed --project=chromium",
     "test:existing-patient-case-history": "playwright test tests/patient/existing-patient-case-history.spec.ts --project=chromium --workers=1",
     "test:existing-patient-case-history:headed": "playwright test tests/patient/existing-patient-case-history.spec.ts --headed --project=chromium --workers=1",
+    "test:patient-consent-case-history": "playwright test tests/patient/patient-consent-case-history.spec.ts --project=chromium --workers=1",
+    "test:patient-consent-case-history:headed": "playwright test tests/patient/patient-consent-case-history.spec.ts --headed --project=chromium --workers=1",
     "test:tibet-patient-registration-save": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --project=chromium",
     "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium"
   },

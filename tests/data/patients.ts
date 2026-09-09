@@ -125,7 +125,9 @@ export type PatientRegistrationData = {
 
 export function createSavePatient(): PatientRegistrationData {
     const suffix = Date.now().toString().slice(-8);
-    const ageYears = randomInt(1, 80);
+    // PatientForm's age field carries min=5 when the unit is years — under-fives are
+    // registered in months — so a run that drew 1-4 could never be saved.
+    const ageYears = randomInt(5, 80);
 
     return {
         name: `Abhinav Rec ${suffix}`,
