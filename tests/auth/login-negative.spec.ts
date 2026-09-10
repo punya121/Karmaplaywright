@@ -29,7 +29,7 @@ async function login(page: Page, username: string, password: string) {
 
 test.describe('Login Negative Test Cases', () => {
 
-    test('Wrong password should show error', async ({ page }) => {
+    test('Wrong password should show error', { tag: ['@auth', '@negative'] }, async ({ page }) => {
 
         await login(page, validUsername, wrongPassword);
 
@@ -44,7 +44,7 @@ test.describe('Login Negative Test Cases', () => {
             .toContainText(loginErrorText, { timeout: 10000 });
     });
 
-    test('Inactive user should show error', async ({ page }) => {
+    test('Inactive user should show error', { tag: ['@auth', '@negative'] }, async ({ page }) => {
 
         await login(page, inactiveUsername, inactivePassword);
 
@@ -59,7 +59,7 @@ test.describe('Login Negative Test Cases', () => {
             .toContainText(loginErrorText, { timeout: 10000 });
     });
 
-    test('More than 2 active logins should show error', async ({ browser }) => {
+    test('More than 2 active logins should show error', { tag: ['@auth', '@negative'] }, async ({ browser }) => {
 
         // First browser session
         const context1 = await browser.newContext();

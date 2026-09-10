@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke --project=chromium --workers=1",
+    "test:journey": "playwright test --grep @journey --project=chromium --workers=1",
     "test:report": "playwright test",
     "report": "node reporting/show-latest-report.js",
     "inspect": "node tools/inspect-page.js",

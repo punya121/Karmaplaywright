@@ -7,7 +7,9 @@ import { RegistrationPage } from '../pages/registration.page';
 test.describe('Patient registration Save', () => {
     test.describe.configure({ mode: 'serial' });
 
-    test('saves a new patient and fills Aadhaar only when required', async ({ page }) => {
+    test('saves a new patient and fills Aadhaar only when required', {
+        tag: ['@smoke', '@patient'],
+    }, async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new RegistrationPage(page);
         const patient = createSavePatient();
@@ -24,7 +26,9 @@ test.describe('Patient registration Save', () => {
         await registrationPage.expectSaved();
     });
 
-    test('shows an error when Aadhaar is required and left empty', async ({ page }) => {
+    test('shows an error when Aadhaar is required and left empty', {
+        tag: ['@negative', '@patient'],
+    }, async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new RegistrationPage(page);
         const patient = createSavePatient();

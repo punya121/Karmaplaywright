@@ -2,8 +2,10 @@ import { expect, test } from '@playwright/test';
 import { validPassword, validUsername } from '../config/test-env';
 import { createSavePatient } from '../data/patients';
 import { CaseHistoryPage } from '../pages/case-history.page';
+import { DoctorSelectionPage } from '../pages/doctor-selection.page';
 import { LoginPage } from '../pages/login.page';
 import { PatientSearchPage } from '../pages/patient-search.page';
+import { PrescriptionSearchPage } from '../pages/prescription-search.page';
 
 // This is the spec that gets presented, so it runs slower than the rest of the suite:
 // every action pauses long enough to follow on screen. E2E_SLOW_MO still overrides.
@@ -12,9 +14,9 @@ test.use({
     launchOptions: { slowMo: Number(process.env.E2E_SLOW_MO ?? 800) },
 });
 
-// Set E2E_HOLD_OPEN=1 (with --headed) to keep the browser open: the run parks inside
-// CaseHistoryPage.saveAndExpectNextPage the moment Save's popup has been OK'd, so the
-// result can be checked by hand. Resume the Inspector to end the run.
+// Set E2E_HOLD_OPEN=1 (with --headed) to keep the browser open. Case history Save
+// parks first; resume to continue to Doctor Selection. That step then parks on
+// Prescription (Centre). Resume again to end the run.
 const holdOpen = !!process.env.E2E_HOLD_OPEN;
 
 test.describe('Existing patient case history', () => {
@@ -34,10 +36,14 @@ test.describe('Existing patient case history', () => {
         await new LoginPage(page).logout();
     });
 
-    test('adds a case history to a patient already on file', async ({ page }) => {
+    test('adds a case history and assigns the prescription to a doctor', {
+        tag: ['@journey', '@patient'],
+    }, async ({ page }) => {
         const loginPage = new LoginPage(page);
         const searchPage = new PatientSearchPage(page);
         const caseHistoryPage = new CaseHistoryPage(page);
+        const prescriptionPage = new PrescriptionSearchPage(page);
+        const doctorPage = new DoctorSelectionPage(page);
 
         // No patient is registered here: the vitals still come from createSavePatient()
         // so every run enters different, age-appropriate readings.
@@ -62,5 +68,23 @@ test.describe('Existing patient case history', () => {
         expect(summary.tests).toHaveLength(caseHistory.testCount);
 
         await caseHistoryPage.saveAndExpectNextPage(dialogMessages);
+
+        // After Save the visit is listed under Search > Prescription (Centre). Hand it
+        // to a doctor: the row's action opens Doctor Selection, the doctor's card (or
+        // photo) is picked, Save commits the handover, and the app returns here.
+        const listedRow = await prescriptionPage.expectPrescriptionFor(patient);
+        console.log(`Prescription (Centre) now lists: ${listedRow}`);
+
+        await prescriptionPage.openDoctorSelectionFor(patient);
+        await doctorPage.expectLoaded();
+
+        const doctor = await doctorPage.selectDoctor();
+        await doctorPage.saveAndExpectPrescriptionCentre();
+
+        test.info().annotations.push({
+            type: 'doctor',
+            description: `prescription for ${patient.displayId} assigned to ${doctor}`,
+        });
+        console.log(`Assigned ${patient.displayId} to ${doctor}`);
     });
 });

@@ -7,7 +7,9 @@ import { TibetRegistrationPage } from '../pages/tibet-registration.page';
 test.describe('Tibet Patient registration Save', () => {
     test.describe.configure({ mode: 'serial' });
 
-    test('saves a new Tibet patient and fills Aadhaar only when required', async ({ page }) => {
+    test('saves a new Tibet patient and fills Aadhaar only when required', {
+        tag: ['@smoke', '@patient', '@tibet'],
+    }, async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new TibetRegistrationPage(page);
         const patient = createSaveTibetPatient();
@@ -24,7 +26,9 @@ test.describe('Tibet Patient registration Save', () => {
         await registrationPage.expectSaved();
     });
 
-    test('shows an error when Aadhaar is required and left empty', async ({ page }) => {
+    test('shows an error when Aadhaar is required and left empty', {
+        tag: ['@negative', '@patient', '@tibet'],
+    }, async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new TibetRegistrationPage(page);
         const patient = createSaveTibetPatient();

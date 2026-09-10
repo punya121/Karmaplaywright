@@ -25,6 +25,11 @@ const slowMo = process.env.E2E_SLOW_MO
  */
 export default defineConfig({
   testDir: './tests',
+  testIgnore: [
+    'auth/login.spec.ts',
+    'patient/patient-registration.spec.ts',
+    'patient/patient-case-history.spec.ts',
+  ],
   /* Slowing every action down eats into the per-test budget, so grow it to match. */
   timeout: slowMo ? 120000 : 30000,
   /* Run tests in files in parallel */

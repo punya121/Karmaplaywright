@@ -41,7 +41,9 @@ test.describe('New patient: register, assign consent, add case history', () => {
         await new LoginPage(page).logout();
     });
 
-    test('registers a patient, assigns their consent form and saves a case history', async ({
+    test('registers a patient, assigns their consent form and saves a case history', {
+        tag: ['@journey', '@patient'],
+    }, async ({
         page,
     }) => {
         const loginPage = new LoginPage(page);

@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { baseUrl } from '../config/test-env';
 
-export type ExistingPatient = {
+export type ExistingPatient = IdentifiedPatient & {
     /** Row text, for reporting which patient the run picked. */
     label: string;
 };
@@ -69,9 +69,10 @@ export class PatientSearchPage {
             .first();
 
         if (await caseHistoryAction.isVisible().catch(() => false)) {
-            const label = (await this.rowTextFor(caseHistoryAction)) ?? 'first listed patient';
+            const row = caseHistoryAction.locator('xpath=ancestor::tr[1]');
+            const patient = await this.patientFromRow(row);
             await caseHistoryAction.click();
-            return { label };
+            return patient;
         }
 
         // No direct action in the list: open the first patient, then add from there.
@@ -83,7 +84,7 @@ export class PatientSearchPage {
         ).toBeGreaterThan(0);
 
         const firstRow = rows.first();
-        const label = (await firstRow.innerText()).replace(/\s+/g, ' ').trim();
+        const patient = await this.patientFromRow(firstRow);
 
         await firstRow
             .getByRole('link')
@@ -99,11 +100,11 @@ export class PatientSearchPage {
 
         await expect(
             addCaseHistory,
-            `Opened "${label}" but found no "Add Case History" control on their page`
+            `Opened "${patient.label}" but found no "Add Case History" control on their page`
         ).toBeVisible({ timeout: 15000 });
         await addCaseHistory.click();
 
-        return { label };
+        return patient;
     }
 
 
@@ -266,10 +267,27 @@ export class PatientSearchPage {
         });
     }
 
-    private async rowTextFor(action: Locator): Promise<string | null> {
-        return action
-            .evaluate((element) => element.closest('tr')?.innerText ?? null)
-            .then((text) => (text ? text.replace(/\s+/g, ' ').trim() : null))
-            .catch(() => null);
+    /**
+     * Columns are No | Id | Name | ... — the displayed id and the Name-column
+     * /PatientForm?id= link are what Prescription (Centre) and Doctor Selection need
+     * after the case history is saved.
+     */
+    private async patientFromRow(row: Locator): Promise<ExistingPatient> {
+        const label = (await row.innerText()).replace(/\s+/g, ' ').trim();
+        const displayId = (await row.getByRole('cell').nth(1).innerText()).trim();
+        const name = (await row.getByRole('cell').nth(2).innerText()).trim();
+        const href = (await row.getByRole('link').first().getAttribute('href')) ?? '';
+        const numericId = /[?&]id=(\d+)/.exec(href)?.[1] ?? displayId.replace(/\D/g, '');
+
+        expect(
+            displayId,
+            `Could not read a patient id from Patient Search row "${label}"`
+        ).toMatch(/[A-Za-z]*\d+/);
+        expect(
+            numericId,
+            `Could not read a numeric id from "${href}" on Patient Search row "${label}"`
+        ).toMatch(/^\d+$/);
+
+        return { label, displayId, numericId, name: name || displayId };
     }
 }

@@ -40,7 +40,15 @@ export class DoctorSelectionPage {
     }
 
     private saveButton(): Locator {
-        return this.page.getByRole('button', { name: /^Save$/i }).first();
+        return this.page
+            .getByRole('button', { name: /^Save$/i })
+            .or(this.page.locator('#Next_1'))
+            .first();
+    }
+
+    /** Photo on the doctor card — a recorded session clicks this as `#image`. */
+    private doctorPhoto(): Locator {
+        return this.page.locator('#image');
     }
 
     async expectLoaded(): Promise<void> {
@@ -74,9 +82,13 @@ export class DoctorSelectionPage {
     async selectDoctor(name = DoctorSelectionPage.defaultDoctor): Promise<string> {
         await this.dismissTour();
 
-        const card = (await this.doctorCard(name).isVisible({ timeout: 10000 }).catch(() => false))
-            ? this.doctorCard(name)
-            : this.doctorCardById(DoctorSelectionPage.defaultDoctorId);
+        const named = this.doctorCard(name);
+        const photo = this.doctorPhoto();
+        const card = (await named.isVisible({ timeout: 10000 }).catch(() => false))
+            ? named
+            : (await photo.isVisible({ timeout: 3000 }).catch(() => false))
+              ? photo
+              : this.doctorCardById(DoctorSelectionPage.defaultDoctorId);
 
         await expect(
             card,
