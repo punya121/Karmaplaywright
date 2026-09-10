@@ -3,6 +3,7 @@ import { validPassword, validUsername } from '../config/test-env';
 import { createSavePatient } from '../data/patients';
 import { CaseHistoryPage } from '../pages/case-history.page';
 import { ConsentFormPage } from '../pages/consent-form.page';
+import { DoctorSelectionPage } from '../pages/doctor-selection.page';
 import { LoginPage } from '../pages/login.page';
 import { PatientSearchPage, type IdentifiedPatient } from '../pages/patient-search.page';
 import { PrescriptionSearchPage } from '../pages/prescription-search.page';
@@ -17,37 +18,47 @@ test.use({
 });
 
 /**
- * The whole chain a new patient goes through, in one run:
+ * One consultation end to end, from a patient who does not exist yet to a
+ * prescription sitting with a doctor:
  *
  *   register and Save  ->  read back the patient id the app assigned
  *                      ->  Others > Assign Consent Form for that id
- *                      ->  Search > Prescription (Centre), find that id
- *                      ->  add the case history and save it
+ *                      ->  open the case history for that patient
+ *                      ->  fill it (with the under-5 checklist if the patient is a
+ *                          child) and save it
+ *                      ->  Search > Prescription (Centre), find the visit that made
+ *                      ->  Doctor Selection for that visit, pick the doctor and save
  *
- * The consent step is what makes the last one possible: the case history form
- * refuses to save for a patient with no consent form on file, which is why
- * registering and adding a case history in one go has never worked from a browser.
+ * Two things make this run at all. The consent form is one: the case history form
+ * refuses to save for a patient with no consent on file, which is why registering and
+ * adding a case history in one go never worked from a browser. The other is that every
+ * step is tied to the id the app handed back at registration — the prescription grid
+ * belongs to the whole centre, so a run that trusted row order would hand a stranger's
+ * visit to a doctor and report success.
+ *
+ * Runs a child instead of an adult with E2E_UNDER_FIVE=1, which is the only way to see
+ * the childhood-illness screening checklist.
  */
-test.describe('New patient: register, assign consent, add case history', () => {
+test.describe('Full consultation: register, consent, case history, doctor', () => {
     test.describe.configure({ mode: 'serial' });
 
-    // Registration, a consent assignment and 3-4 symptoms plus 3-4 PoC tests, each
-    // one a selectize round trip, runs well past the default — more so at demo pace.
-    test.setTimeout(600000);
+    // Registration, a consent assignment, 3-4 symptoms plus 3-4 PoC tests each a
+    // selectize round trip, and then the handover — well past the default, more so at
+    // demo pace.
+    test.setTimeout(900000);
 
     test.afterEach(async ({ page }) => {
         await new LoginPage(page).logout();
     });
 
-    test('registers a patient, assigns their consent form and saves a case history', async ({
-        page,
-    }) => {
+    test('takes a new patient from registration through to a doctor', async ({ page }) => {
         const loginPage = new LoginPage(page);
         const registrationPage = new RegistrationPage(page);
         const searchPage = new PatientSearchPage(page);
         const consentPage = new ConsentFormPage(page);
         const prescriptionPage = new PrescriptionSearchPage(page);
         const caseHistoryPage = new CaseHistoryPage(page);
+        const doctorPage = new DoctorSelectionPage(page);
 
         const patient = createSavePatient();
         const caseHistory = patient.caseHistory;
@@ -73,7 +84,7 @@ test.describe('New patient: register, assign consent, add case history', () => {
         const registered: IdentifiedPatient = await searchPage.identifyPatient(patient);
         test.info().annotations.push({
             type: 'patient',
-            description: `${registered.displayId} (${registered.numericId}) ${registered.name}`,
+            description: `${registered.displayId} (${registered.numericId}) ${registered.name}, aged ${patient.age} ${patient.ageUnit}`,
         });
         console.log(
             `Registered ${patient.name} as ${registered.displayId} (numeric id ${registered.numericId})`
@@ -135,5 +146,25 @@ test.describe('New patient: register, assign consent, add case history', () => {
         //    under Search > Prescription (Centre) against the same id.
         const listedRow = await prescriptionPage.expectPrescriptionFor(registered);
         console.log(`Prescription (Centre) now lists: ${listedRow}`);
+
+        // 7. Hand that visit to a doctor. The row is found by this patient's id rather
+        //    than by position — the grid is the centre's, newest first — and the
+        //    prescription id read off it is checked again on the screen that opens, so
+        //    the doctor cannot end up with someone else's consultation.
+        const prescriptionId = await prescriptionPage.openDoctorSelectionFor(registered);
+        await doctorPage.expectLoaded(prescriptionId);
+
+        const doctor = await doctorPage.selectDoctor();
+        await doctorPage.saveAndExpectPrescriptionCentre();
+
+        test.info().annotations.push({
+            type: 'doctor',
+            description: `prescription ${prescriptionId || '(id not in the link)'} for ${
+                registered.displayId
+            } assigned to ${doctor}`,
+        });
+        console.log(
+            `Assigned ${registered.displayId}'s prescription ${prescriptionId} to ${doctor}`
+        );
     });
 });

@@ -39,16 +39,34 @@ export class DoctorSelectionPage {
         return this.page.locator(`[id="${doctorId}"]`);
     }
 
+    /**
+     * The button that commits the handover - #Next_1, running checkDocAllocation().
+     * Three controls on this page answer to the name "Save": #Next_1, #Next below it,
+     * and a hidden one in the confirm modal, so the id is used rather than the name.
+     */
     private saveButton(): Locator {
-        return this.page.getByRole('button', { name: /^Save$/i }).first();
+        return this.page.locator('#Next_1');
     }
 
-    async expectLoaded(): Promise<void> {
+    /**
+     * Confirms the screen opened, and - when the row it was opened from named a
+     * prescription - that it is that prescription's. The grid holds the whole centre's
+     * visits, so landing on the right screen for the wrong patient is the failure worth
+     * catching here.
+     */
+    async expectLoaded(prescriptionId = ''): Promise<void> {
         await this.page.waitForLoadState('load');
         await expect(
             this.page,
             'Doctor Selection did not open for this prescription'
         ).toHaveURL(/DoctorSelection/i, { timeout: 15000 });
+
+        if (prescriptionId) {
+            await expect(
+                this.page,
+                `Doctor Selection opened a different prescription than the one saved (expected id ${prescriptionId})`
+            ).toHaveURL(new RegExp(`[?&]id=${prescriptionId}(?:&|$)`, 'i'), { timeout: 15000 });
+        }
     }
 
     /**
@@ -91,6 +109,19 @@ export class DoctorSelectionPage {
             await card.click().catch(() => undefined);
         }
 
+        // The card's onclick is selected(<doctor id>), which asks
+        // DoctorSelection/GetAvailability_of_Doctor whether that doctor is free and only
+        // fills the hidden #assignedId when the answer is 1. A doctor who is not checked
+        // in answers 0, and the click is then swallowed in silence - no alert, no change
+        // on screen - leaving Save with nothing to submit. Checking the id here says so
+        // outright, instead of letting the run fail one step later for no stated reason.
+        await expect(
+            this.page.locator('#assignedId'),
+            `${name} did not take the assignment: GetAvailability_of_Doctor answered 0, ` +
+                `so the card was never selected. That doctor has to be checked in (log in ` +
+                `as them, DoctorHome > Check In) before a prescription can be handed over.`
+        ).not.toHaveValue('', { timeout: 15000 });
+
         return name;
     }
 
@@ -100,9 +131,10 @@ export class DoctorSelectionPage {
      * stops a logout teardown from cutting the handover short.
      */
     async saveAndExpectPrescriptionCentre(): Promise<void> {
-        await expect(this.saveButton(), 'Doctor Selection has no Save button').toBeVisible({
-            timeout: 15000,
-        });
+        await expect(
+            this.saveButton(),
+            'Doctor Selection has no "End the video call and save prescription" button'
+        ).toBeVisible({ timeout: 15000 });
         await this.saveButton().click();
 
         const arrived = await this.page
@@ -112,7 +144,9 @@ export class DoctorSelectionPage {
 
         if (!arrived) {
             throw new Error(
-                `Save did not return to Prescription (Centre) — the run is still on ${this.page.url()}, so the prescription may not have been handed over`
+                `Save did not return to Prescription (Centre) — the run is still on ${this.page.url()}. ` +
+                    `checkDocAllocation() re-checks the doctor's availability and only submits the form ` +
+                    `when that answers 1, so the prescription has not been handed over.`
             );
         }
 

@@ -60,18 +60,28 @@ export class PrescriptionSearchPage {
     }
 
     /**
-     * Opens Doctor Selection for this patient's most recent prescription - the row's
-     * own action, not a column index. A recorded session gives this as
-     * "#prescriptionGrid > table > tbody > tr:nth-child(2) > td:nth-child(9) > font >
-     * div > a.button", which is the second row of whatever the grid held that day; the
-     * link is found by where it goes instead, so it stays right when the grid reorders.
+     * Opens Doctor Selection for this patient's most recent prescription and reports
+     * the prescription id it opened - the row's own action, not a column index.
+     *
+     * A recorded session gives this as "#prescriptionGrid > table > tbody >
+     * tr:nth-child(2) > td:nth-child(9) > font > div > a.button", which is the second
+     * row of whatever the grid held that day. The grid is the whole centre's, newest
+     * first, so by the next run that row belongs to someone else. The row is found by
+     * the patient's own id instead, and the id is checked again on the row before
+     * anything is clicked: a doctor assigned to the wrong visit is not something the
+     * run would notice afterwards.
      */
-    async openDoctorSelectionFor(patient: IdentifiedPatient): Promise<void> {
+    async openDoctorSelectionFor(patient: IdentifiedPatient): Promise<string> {
         const row = this.rowsFor(patient).first();
         await expect(
             row,
             `Prescription (Centre) lists no visit for ${patient.displayId}`
         ).toHaveCount(1, { timeout: 15000 });
+
+        await expect(
+            row.getByRole('cell', { name: patient.displayId, exact: true }),
+            `The row about to be opened does not carry ${patient.displayId}`
+        ).toHaveCount(1);
 
         const doctorLink = row.locator('a[href*="DoctorSelection" i]').first();
         await expect(
@@ -79,8 +89,15 @@ export class PrescriptionSearchPage {
             `The prescription row for ${patient.displayId} offers no Doctor Selection link`
         ).toBeVisible({ timeout: 15000 });
 
+        // /DoctorSelection?id=<prescription id>. Read before the click so the page it
+        // lands on can be held to the visit this row was for.
+        const href = (await doctorLink.getAttribute('href')) ?? '';
+        const prescriptionId = /[?&]id=(\d+)/i.exec(href)?.[1] ?? '';
+
         await doctorLink.click();
         await this.page.waitForLoadState('load');
+
+        return prescriptionId;
     }
 
     /**

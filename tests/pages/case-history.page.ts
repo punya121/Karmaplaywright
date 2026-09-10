@@ -112,6 +112,8 @@ export type CaseHistorySummary = {
     symptoms: string[];
     durations: string[];
     tests: string[];
+    /** What the under-5 screening checklist was answered with, empty for an adult. */
+    underFiveChecklist: string[];
 };
 
 /**
@@ -317,6 +319,146 @@ export class CaseHistoryPage {
             .catch(() => false);
     }
 
+    /**
+     * The under-5 screening checklist ("Checklist for screening of under-5 children for
+     * major childhood illnesses") is part of the case history form only when the patient
+     * is a child; for anyone older it is not rendered at all. Its questions are required
+     * radio groups, so a run that ignores the section gets no further than the browser's
+     * own "Please select one of these options" bubble on Save.
+     *
+     * The groups are discovered from the page rather than pinned here: the section is
+     * found by its heading, narrowed to the nearest ancestor that holds the first
+     * question, and every radio group inside it is read off by name.
+     */
+    private async underFiveRadioGroups(): Promise<{ name: string; label: string }[]> {
+        return this.page.evaluate(() => {
+            const heading = Array.from(document.querySelectorAll<HTMLElement>('*')).find(
+                (element) =>
+                    element.children.length === 0 &&
+                    /Checklist for screening of under-?\s*5 children/i.test(element.textContent || '')
+            );
+
+            if (!heading) {
+                return [];
+            }
+
+            let section: HTMLElement | null = heading.parentElement;
+            while (section && !/General Health/i.test(section.textContent || '')) {
+                section = section.parentElement;
+            }
+
+            if (!section) {
+                return [];
+            }
+
+            const groups: { name: string; label: string }[] = [];
+            const seen = new Set<string>();
+
+            for (const radio of Array.from(
+                section.querySelectorAll<HTMLInputElement>('input[type="radio"]')
+            )) {
+                if (!radio.name || seen.has(radio.name)) {
+                    continue;
+                }
+                seen.add(radio.name);
+
+                // The question is whatever the row says before its options: the row for
+                // "General Health: Good Fair Sick Very Sick" is reported as General Health.
+                const row = radio.closest('tr, li, p, div');
+                const rowText = (row?.textContent || radio.name).replace(/\s+/g, ' ').trim();
+                groups.push({ name: radio.name, label: rowText.split(':')[0].trim().slice(0, 40) });
+            }
+
+            return groups;
+        });
+    }
+
+    /** Whether this patient's form carries the under-5 checklist at all. */
+    async hasUnderFiveChecklist(): Promise<boolean> {
+        return (await this.underFiveRadioGroups()).length > 0;
+    }
+
+    /**
+     * Answers the checklist and reports what it was answered with. Every question is
+     * left at its first option — Good for general health, Absent for dehydration — which
+     * is the healthy end of each scale and matches the well child the rest of the run
+     * generates.
+     *
+     * The complaint checkboxes (Cough, Fever, Diarrhea ...) are deliberately left
+     * unticked: ticking one enables its Type, Day and Duration controls, and each of
+     * those then has to be answered too. A child with no complaints is the shortest
+     * valid form, and a run that wants a sick child should say so in its data rather
+     * than have this method invent symptoms.
+     */
+    async fillUnderFiveChecklist(): Promise<string[]> {
+        const page = this.page;
+        const groups = await this.underFiveRadioGroups();
+
+        if (groups.length === 0) {
+            return [];
+        }
+
+        const answered: string[] = [];
+
+        for (const group of groups) {
+            const options = page.locator(`input[type="radio"][name="${group.name}"]`);
+            const chosen = page.locator(`input[type="radio"][name="${group.name}"]:checked`);
+
+            // A group that already has an answer is left as it is. The section is found
+            // by walking up from the heading, so on a form whose markup puts the heading
+            // alongside the rest of the fields the walk can reach far enough to include
+            // Allergies - which was answered above and must stay as it was set.
+            if ((await chosen.count()) > 0) {
+                continue;
+            }
+
+            // The radios carry no accessible name of their own and some sit under a
+            // label that covers them, so they are checked by position and by force.
+            await options.first().check({ force: true });
+
+            const value = await chosen.first().getAttribute('value');
+            answered.push(`${group.label}: ${value ?? 'first option'}`);
+        }
+
+        // Whatever the browser would still refuse to submit, named here rather than left
+        // to surface as a bare timeout after Save.
+        const unanswered = await page.evaluate(() => {
+            const heading = Array.from(document.querySelectorAll<HTMLElement>('*')).find(
+                (element) =>
+                    element.children.length === 0 &&
+                    /Checklist for screening of under-?\s*5 children/i.test(element.textContent || '')
+            );
+
+            let section: HTMLElement | null = heading ? heading.parentElement : null;
+            while (section && !/General Health/i.test(section.textContent || '')) {
+                section = section.parentElement;
+            }
+
+            if (!section) {
+                return [];
+            }
+
+            const blocking = new Set<string>();
+            for (const control of Array.from(
+                section.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+                    'input:invalid, select:invalid, textarea:invalid'
+                )
+            )) {
+                blocking.add(control.name || control.id || control.type);
+            }
+
+            return Array.from(blocking);
+        });
+
+        if (unanswered.length > 0) {
+            throw new Error(
+                `The under-5 checklist still has required answers the browser will block Save on: ${unanswered.join(', ')}`
+            );
+        }
+
+        return answered;
+    }
+
     async fill(caseHistory: PatientCaseHistoryData): Promise<CaseHistorySummary> {
         const page = this.page;
 
@@ -358,6 +500,10 @@ export class CaseHistoryPage {
             .nth(caseHistory.allergies === 'Known' ? 0 : 1)
             .check({ force: true });
 
+        // Under-fives get an extra screening section that older patients never see, so
+        // its absence is the normal case rather than a failure.
+        const underFiveChecklist = await this.fillUnderFiveChecklist();
+
         const symptoms = await this.addSymptoms(caseHistory.symptomCount);
         const tests = await this.addTests(
             caseHistory.testCount,
@@ -365,7 +511,7 @@ export class CaseHistoryPage {
             caseHistory.maxTestValue
         );
 
-        return { nursingStaff, transportMode, ...symptoms, tests };
+        return { nursingStaff, transportMode, ...symptoms, tests, underFiveChecklist };
     }
 
     private symptomRows(): Locator {

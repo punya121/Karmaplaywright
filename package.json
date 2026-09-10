@@ -21,8 +21,12 @@
     "test:patient-case-history:headed": "playwright test tests/patient/patient-case-history.spec.ts --headed --project=chromium",
     "test:existing-patient-case-history": "playwright test tests/patient/existing-patient-case-history.spec.ts --project=chromium --workers=1",
     "test:existing-patient-case-history:headed": "playwright test tests/patient/existing-patient-case-history.spec.ts --headed --project=chromium --workers=1",
+    "test:full-consultation": "playwright test tests/patient/full-consultation.spec.ts --project=chromium --workers=1",
+    "test:full-consultation:headed": "playwright test tests/patient/full-consultation.spec.ts --headed --project=chromium --workers=1",
     "test:patient-consent-case-history": "playwright test tests/patient/patient-consent-case-history.spec.ts --project=chromium --workers=1",
     "test:patient-consent-case-history:headed": "playwright test tests/patient/patient-consent-case-history.spec.ts --headed --project=chromium --workers=1",
+    "test:doctor-consultation": "playwright test tests/doctor/doctor-consultation.spec.ts --project=chromium --workers=1",
+    "test:doctor-consultation:headed": "playwright test tests/doctor/doctor-consultation.spec.ts --headed --project=chromium --workers=1",
     "test:tibet-patient-registration-save": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --project=chromium",
     "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium"
   },
