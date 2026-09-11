@@ -123,17 +123,29 @@ export type PatientRegistrationData = {
     caseHistory?: PatientCaseHistoryData;
 };
 
-export function createSavePatient(): PatientRegistrationData {
+export type PatientOptions = {
+    /**
+     * Register a child instead of an adult. Under-fives get a screening checklist on
+     * the case history form that nobody else sees, so this is how a run exercises it.
+     * E2E_UNDER_FIVE=1 turns it on for a whole run without touching the spec.
+     */
+    underFive?: boolean;
+};
+
+export function createSavePatient(options: PatientOptions = {}): PatientRegistrationData {
     const suffix = Date.now().toString().slice(-8);
+    const underFive = options.underFive ?? !!process.env['E2E_UNDER_FIVE'];
+
     // PatientForm's age field carries min=5 when the unit is years — under-fives are
-    // registered in months — so a run that drew 1-4 could never be saved.
-    const ageYears = randomInt(5, 80);
+    // registered in months — so a run that drew 1-4 in years could never be saved.
+    const ageMonths = underFive ? randomInt(6, 59) : 0;
+    const ageYears = underFive ? ageMonths / 12 : randomInt(5, 80);
 
     return {
         name: `Abhinav Rec ${suffix}`,
         parent: 'Rec',
-        age: String(ageYears),
-        ageUnit: 'years',
+        age: String(underFive ? ageMonths : ageYears),
+        ageUnit: underFive ? 'months' : 'years',
         village: 'Dhaula',
         gender: 'Male',
         // Marital status has to follow the age too, or a child gets registered married.
