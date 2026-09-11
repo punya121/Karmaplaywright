@@ -93,8 +93,38 @@ export class PrescriptionSearchPage {
         // lands on can be held to the visit this row was for.
         const href = (await doctorLink.getAttribute('href')) ?? '';
         const prescriptionId = /[?&]id=(\d+)/i.exec(href)?.[1] ?? '';
+        const landed = new RegExp(`DoctorSelection\\?id=${prescriptionId || '\\d+'}`, 'i');
 
-        await doctorLink.click();
+        // The doctor icon is not always clickable. The server sometimes renders it as
+        // <a style="pointer-events: none"> inside a <div>, so a click falls through to
+        // that div, and the page's Bootstrap 2 modals (#consentFormModal, #BillModel)
+        // are transparent but still sit over the middle columns. Either way Playwright
+        // just scrolls up and down retrying until the test times out. A trial click
+        // tells whether a real click would reach the icon; if not, the icon's own href
+        // is opened, which is the same GET the click would have made.
+        const clickable = await doctorLink
+            .click({ trial: true, timeout: 5000 })
+            .then(() => true)
+            .catch(() => false);
+
+        if (clickable) {
+            await Promise.all([
+                this.page.waitForURL(landed, { timeout: 30000 }),
+                doctorLink.click(),
+            ]);
+        } else {
+            const disabledByApp = await doctorLink.evaluate(
+                (link) => getComputedStyle(link).pointerEvents === 'none'
+            );
+            console.log(
+                `Doctor icon for ${patient.displayId} is not clickable (${
+                    disabledByApp ? 'the app rendered it with pointer-events: none' : 'covered by another element'
+                }); opening ${href} directly`
+            );
+            await this.page.goto(href);
+            await expect(this.page).toHaveURL(landed, { timeout: 30000 });
+        }
+
         await this.page.waitForLoadState('load');
 
         return prescriptionId;
