@@ -32,6 +32,26 @@ npm run report:list                         # every run kept on disk
 
 `npx playwright show-report reports/runs/<run id>/playwright-report` works too.
 
+## Email the Excel report (Amazon SES)
+
+After the workbook is written, the reporter can send it as an attachment through
+Amazon SES. Put the keys in `.env` (never commit them):
+
+```bash
+E2E_REPORT_EMAIL_FROM=reports@your-verified-domain.com
+E2E_REPORT_EMAIL_TO=qa@example.com,lead@example.com
+AWS_SES_REGION=ap-south-1
+AWS_SES_ACCESS_KEY_ID=...
+AWS_SES_SECRET_ACCESS_KEY=...
+```
+
+`E2E_REPORT_EMAIL_FROM` must be a verified SES identity. If the account is still
+in the SES sandbox, every address in `E2E_REPORT_EMAIL_TO` (and `E2E_REPORT_EMAIL_CC`)
+must be verified too.
+
+Leave From/To unset to skip mail. Set `E2E_REPORT_EMAIL=false` to skip even when
+they are set. A send failure is printed in the terminal and does not fail the suite.
+
 ## Naming a run yourself
 
 The folder name is a timestamp by default. Set `E2E_RUN_ID` to name it instead —
@@ -54,7 +74,8 @@ whole `reports/runs/` folder to start fresh.
 
 | File | What it does |
 | --- | --- |
-| `module-report-reporter.ts` | The Playwright reporter. Collects results, writes the JSON, calls the Excel writer, appends to `history.json`. |
+| `module-report-reporter.ts` | The Playwright reporter. Collects results, writes the JSON, calls the Excel writer, emails the workbook, appends to `history.json`. |
+| `send-report-email.ts` | Sends the Excel workbook through Amazon SES. |
 | `run-context.ts` | The per-run id and folder paths, shared with `playwright.config.ts`. |
 | `show-latest-report.js` | Backs `npm run report` / `npm run report:list`. |
 | `module-resolver.ts` | Decides which module a test belongs to. |

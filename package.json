@@ -15,6 +15,7 @@
     "report:list": "node reporting/show-latest-report.js --list",
     "test:headed": "playwright test --headed",
     "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
+     "test:login:headed": "playwright test tests/auth/login.spec.ts --headed --project=chromium",
     "test:login-negative": "playwright test tests/auth/login-negative.spec.ts --project=chromium",
     "test:patient-registration": "playwright test tests/patient/patient-registration.spec.ts --project=chromium",
     "test:patient-registration:headed": "playwright test tests/patient/patient-registration.spec.ts --headed --project=chromium",
@@ -40,6 +41,7 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@aws-sdk/client-ses": "^3.1131.0",
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.2",
     "dotenv": "^17.4.2",

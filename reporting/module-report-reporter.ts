@@ -11,6 +11,7 @@ import type {
 import { resolveModule, resolveTestCaseName } from './module-resolver';
 import { HISTORY_FILE, RUN_DIR, RUN_ID, relativeToCwd, runPath } from './run-context';
 import { writeExcelReport } from './excel-writer';
+import { sendExcelReportEmail } from './send-report-email';
 import type {
     ModuleSummary,
     RawStatus,
@@ -169,6 +170,16 @@ export default class ModuleReportReporter implements Reporter {
             console.log(`    JSON  : ${relativeToCwd(this.jsonFile)}`);
             console.log(`    Excel : ${relativeToCwd(this.excelFile)}`);
             console.log(`    HTML  : npm run report   (opens this run)`);
+
+            try {
+                await sendExcelReportEmail(payload, this.excelFile);
+            } catch (error) {
+                console.error(
+                    '[report-email] Could not send the Excel report:',
+                    error instanceof Error ? error.message : error,
+                );
+            }
+
             console.log('');
         } catch (error) {
             // Reporting problems must never turn a green run red — just say so loudly.
