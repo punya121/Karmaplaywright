@@ -3,9 +3,11 @@ import type { ConsultationData } from '../data/consultations';
 import { moduleCase } from '../support/module-case';
 import {
     isVisibleWithin,
+    type PickOptions,
     pickOrType,
     pickRandom,
     pickRandomOption,
+    pickSmallestDoseOption,
     pickSmallestNumericOption,
     randomInt,
 } from './selectize';
@@ -32,6 +34,32 @@ export type MedicineLine = {
     duration: string | null;
     instruction: string | null;
     route: string | null;
+};
+
+/**
+ * A prescription line the centre's shelves will not cover, as the form's own alert puts
+ * it: "Note: <medicine> is not available for the quantity prescribed. || Available
+ * Quantity in stock is 1 || Prescribed Quantity is 3."
+ */
+export type StockShortfall = {
+    medicine: string;
+    /** How many the centre holds. */
+    available: number;
+    /** How many the consultation asked for. */
+    prescribed: number;
+};
+
+/**
+ * A short line and what the run did about it — cut the quantity back, took the medicine
+ * off the prescription, or (only ever for the last line standing, since a consultation
+ * cannot be saved with nothing on it) prescribed another in its place.
+ */
+export type StockAdjustment = StockShortfall & {
+    action: 'reduced' | 'removed' | 'replaced';
+    /** What changed on the form, for the run's own record. */
+    detail: string;
+    /** The line now in its place, where one was written. */
+    replacement?: MedicineLine;
 };
 
 export type ConsultationSummary = {
@@ -72,6 +100,25 @@ export type ConsultationSummary = {
  */
 export class PrescriptionFormPage {
     constructor(private readonly page: Page) {}
+
+    /**
+     * The run's own choices, kept from fill() so that a save the centre's stock refuses
+     * can write a replacement line with the same fallbacks the first one was written
+     * with. Null until the form has been filled.
+     */
+    private consultation: ConsultationData | null = null;
+
+    /**
+     * The columns of a medicine row, in the order they read on screen, for the ones a
+     * short line has to be edited through afterwards. See filledRowField().
+     */
+    private static readonly MEDICINE_COLUMNS = {
+        category: 0,
+        medicine: 1,
+        dosage: 2,
+        howOften: 3,
+        duration: 4,
+    } as const;
 
     /**
      * The form talks through native dialogs and they need opposite answers: alert() is a
@@ -127,6 +174,8 @@ export class PrescriptionFormPage {
      */
     async fill(consultation: ConsultationData, prescriptionId = ''): Promise<ConsultationSummary> {
         const form = 'Prescription Form';
+
+        this.consultation = consultation;
 
         const provisionalDiagnosis = await moduleCase(form, 'Record the provisional diagnosis', () =>
             this.setProvisionalDiagnosis(consultation)
@@ -713,39 +762,134 @@ export class PrescriptionFormPage {
      * The recorded session presses this button eight times in a row. That is what a
      * cancelled submit looks like from the outside, and it is exactly the thing worth
      * turning into a message instead of a retry.
+     *
+     * The one refusal that is answered rather than reported is the stock check. The form
+     * weighs what was prescribed against what the centre actually holds and cancels the
+     * whole save over a single line — "Available Quantity in stock is 1 || Prescribed
+     * Quantity is 3" — naming the medicine and telling the doctor what to do about it:
+     * prescribe another medicine, or reduce the quantity. A run does exactly that, in
+     * that order of least damage — cut the line back to the smallest the form will take,
+     * take it off the prescription where even that is more than the stock, and only where
+     * it was the consultation's one and only medicine put another in its place — and
+     * saves again. Nothing about the form is broken when a centre is short of a drug, so
+     * a run that failed over it was reporting the pharmacy, not the software.
+     *
+     * What it had to change is handed back, and folded into `summary` when one is passed,
+     * so the run says what was written rather than what it set out to write.
      */
-    async saveAndExpectLeavingForm(dialogMessages: string[] = []): Promise<void> {
+    async saveAndExpectLeavingForm(
+        dialogMessages: string[] = [],
+        summary?: ConsultationSummary
+    ): Promise<StockAdjustment[]> {
         const page = this.page;
         const formUrl = page.url();
-        const alertsBefore = dialogMessages.length;
+        const adjustments: StockAdjustment[] = [];
 
-        // A required tickbox the form will not submit without — the browser blocks the
-        // submit on it before the app ever sees the click.
-        const declaration = page.locator('input[type="checkbox"]:required').first();
-        if (await declaration.isVisible({ timeout: 2000 }).catch(() => false)) {
-            await declaration.check({ force: true }).catch(() => undefined);
+        // One pass to cut a line back and one to take it off, per line, plus the save that
+        // finally goes through. Past that the run is pressing the button the way the
+        // recording did, so it stops and says what the form said.
+        const attempts = 2 * ((summary?.medicines.length ?? 1) + 1) + 1;
+
+        for (let attempt = 1; ; attempt += 1) {
+            const alertsBefore = dialogMessages.length;
+
+            // A required tickbox the form will not submit without — the browser blocks the
+            // submit on it before the app ever sees the click.
+            const declaration = page.locator('input[type="checkbox"]:required').first();
+            if (await declaration.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await declaration.check({ force: true }).catch(() => undefined);
+            }
+
+            await this.saveButton().click();
+
+            const outcome = await this.waitForSaveOutcome(dialogMessages, alertsBefore, formUrl);
+
+            if (outcome === 'left') {
+                break;
+            }
+
+            if (outcome === 'alerted') {
+                const alerts = dialogMessages.slice(alertsBefore);
+                const eased =
+                    attempt < attempts &&
+                    (await this.easeStockShortfalls(alerts, adjustments, summary));
+
+                if (eased) {
+                    continue;
+                }
+
+                this.throwIfAlerted(dialogMessages, alertsBefore, formUrl);
+            }
+
+            throw new Error(
+                `Save did not leave the prescription form (${page.url()}), so the consultation ` +
+                    `was not written — ${
+                        (await this.saveComplaint()) ?? 'no validation message was shown'
+                    }`
+            );
         }
-
-        await this.saveButton().click();
-
-        this.throwIfAlerted(dialogMessages, alertsBefore, formUrl);
 
         if (holdOpen) {
             // Saved, and whatever the app popped up has been answered. Stop here so the
             // browser stays on the result; resume to end the run.
             await page.pause();
-            return;
+            return adjustments;
         }
 
-        const movedOn = await page
-            .waitForURL((url) => url.toString() !== formUrl, { timeout: 30000 })
-            .then(() => true)
-            .catch(() => false);
+        await page.waitForLoadState('load');
 
-        this.throwIfAlerted(dialogMessages, alertsBefore, formUrl);
+        // A saved consultation comes back to the patient's summary. On the doctor's side
+        // the nav Home is an image link with no accessible name at all, so "Home" is a
+        // centre-page landmark that never matches here - it failed a save that had in fact
+        // gone through, with the prescription written and the app already back on the
+        // summary. What the app returned to is what gets checked instead.
+        await expect(
+            page,
+            'The prescription was saved but the app did not come back to the patient summary'
+        ).toHaveURL(/PrescriptionView|DoctorHome/i, { timeout: 20000 });
 
-        if (!movedOn) {
-            const complaint = await page.evaluate(() => {
+        return adjustments;
+    }
+
+    /**
+     * What became of a save: the form submitted and the app moved on, the form cancelled
+     * it through an alert, or neither happened and the run is still sitting on it.
+     *
+     * Waiting on the navigation alone would cost the full timeout on every refused save,
+     * and a refused save is the case this has to be quick about, since it is the one the
+     * run now edits and retries. The alert has already been answered by the dialog
+     * handler by the time it reaches `dialogMessages`, so whichever of the two happens
+     * first ends the wait.
+     */
+    private async waitForSaveOutcome(
+        dialogMessages: string[],
+        alertsBefore: number,
+        formUrl: string,
+        timeout = 30000
+    ): Promise<'left' | 'alerted' | 'stuck'> {
+        const deadline = Date.now() + timeout;
+
+        for (;;) {
+            if (dialogMessages.length > alertsBefore) {
+                return 'alerted';
+            }
+
+            if (this.page.url() !== formUrl) {
+                return 'left';
+            }
+
+            if (Date.now() >= deadline) {
+                return 'stuck';
+            }
+
+            await this.page.waitForTimeout(250);
+        }
+    }
+
+    /** The form's own reason for refusing a submit, where it gave one. */
+    private async saveComplaint(): Promise<string | null> {
+        return this.page
+            .evaluate(() => {
                 const invalid = document.querySelector<
                     HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
                 >('input:invalid, select:invalid, textarea:invalid');
@@ -765,26 +909,457 @@ export class PrescriptionFormPage {
                 ).find((element) => element.offsetParent !== null && element.innerText.trim());
 
                 return shown ? shown.innerText.trim() : null;
-            });
+            })
+            .catch(() => null);
+    }
 
-            throw new Error(
-                `Save did not leave the prescription form (${page.url()}), so the consultation ` +
-                    `was not written — ${complaint ?? 'no validation message was shown'}`
-            );
+    /**
+     * Reads a stock refusal back out of the app's own words:
+     *
+     *   Note: Duolin Respules 2.5 ml (...) is not available for the quantity prescribed.
+     *   || Available Quantity in stock is 1 || Prescribed Quantity is 3. You are requested
+     *   to prescribe another medicine, or reduce the prescribed quantity of the medicine.
+     *
+     * Anything that is not that — a missing field, a blank symptom row — is not something
+     * to edit around, so it comes back null and is reported the way it always was.
+     */
+    private static readStockShortfall(message: string): StockShortfall | null {
+        const named = /(?:Note\s*:\s*)?(.+?)\s+is not available for the quantity prescribed/i.exec(
+            message
+        );
+        const available = /Available Quantity in stock is\s*([\d.]+)/i.exec(message);
+        const prescribed = /Prescribed Quantity is\s*([\d.]+)/i.exec(message);
+
+        if (!named || !available || !prescribed) {
+            return null;
         }
 
-        await page.waitForLoadState('load');
-
-        // A saved consultation comes back to the patient's summary. On the doctor's side
-        // the nav Home is an image link with no accessible name at all, so "Home" is a
-        // centre-page landmark that never matches here - it failed a save that had in fact
-        // gone through, with the prescription written and the app already back on the
-        // summary. What the app returned to is what gets checked instead.
-        await expect(
-            page,
-            'The prescription was saved but the app did not come back to the patient summary'
-        ).toHaveURL(/PrescriptionView|DoctorHome/i, { timeout: 20000 });
+        return {
+            medicine: named[1].replace(/\s+/g, ' ').trim(),
+            available: Number(available[1]),
+            prescribed: Number(prescribed[1]),
+        };
     }
+
+    /**
+     * Answers the alerts a refused save raised and reports whether the form was changed
+     * enough to be worth pressing Save again. One alert that is not about stock is enough
+     * to stop: the run has no business editing around a refusal it cannot read.
+     */
+    private async easeStockShortfalls(
+        alerts: string[],
+        adjustments: StockAdjustment[],
+        summary?: ConsultationSummary
+    ): Promise<boolean> {
+        const shortfalls = alerts.map((alert) => PrescriptionFormPage.readStockShortfall(alert));
+
+        if (shortfalls.length === 0 || shortfalls.some((shortfall) => shortfall === null)) {
+            return false;
+        }
+
+        let changed = false;
+
+        for (const shortfall of shortfalls as StockShortfall[]) {
+            const adjustment = await this.easeStockShortfall(shortfall, adjustments);
+
+            if (adjustment === null) {
+                continue;
+            }
+
+            adjustments.push(adjustment);
+            this.applyAdjustment(adjustment, summary);
+            console.log(
+                `Stock: ${adjustment.available} of ${adjustment.medicine} against ` +
+                    `${adjustment.prescribed} prescribed — ${adjustment.detail}`
+            );
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    /**
+     * One short line, dealt with the way the alert asks. A line is only cut back once: if
+     * the form comes back complaining about the same medicine after that, the smallest the
+     * dropdowns offer is still more than the centre holds and no further editing will save
+     * it — so it comes off, or is swapped for another medicine where it was the only one
+     * on the consultation.
+     */
+    private async easeStockShortfall(
+        shortfall: StockShortfall,
+        adjustments: StockAdjustment[]
+    ): Promise<StockAdjustment | null> {
+        // The over-the-counter line is a medicine like any other as far as the stock check
+        // goes, but it is the one line a consultation does not need and it has no dosage
+        // or duration to cut back, so a short one is simply dropped.
+        const otcRow = this.page.locator('#OTCRow');
+
+        if (await this.rowHolds(otcRow, shortfall.medicine)) {
+            if (!(await this.clearRow(otcRow))) {
+                return null;
+            }
+
+            return {
+                ...shortfall,
+                action: 'removed',
+                detail: 'the over-the-counter line was dropped',
+            };
+        }
+
+        const row = await this.medicineRowFor(shortfall.medicine);
+
+        if (row === null) {
+            return null;
+        }
+
+        const cutBackAlready = adjustments.some(
+            (adjustment) =>
+                adjustment.medicine === shortfall.medicine && adjustment.action === 'reduced'
+        );
+
+        if (!cutBackAlready) {
+            const detail = await this.minimiseRowQuantity(row);
+
+            if (detail !== null) {
+                return { ...shortfall, action: 'reduced', detail };
+            }
+        }
+
+        // A consultation cannot be saved with nothing on it, so the last line standing is
+        // replaced rather than taken off - the other half of what the alert itself
+        // suggests, and what keeps the run testing the form instead of reporting the
+        // pharmacy's shelves.
+        if ((await this.filledMedicineRowCount()) <= 1) {
+            const replacement = await this.replaceMedicine(
+                row,
+                adjustments.map((adjustment) => adjustment.medicine)
+            );
+
+            if (replacement === null) {
+                throw new Error(
+                    `The centre holds ${shortfall.available} of ${shortfall.medicine} against the ` +
+                        `${shortfall.prescribed} this consultation prescribes, it is the only ` +
+                        `medicine on the form, and nothing else could be prescribed in its place ` +
+                        `— so there is no prescription left to save`
+                );
+            }
+
+            return {
+                ...shortfall,
+                action: 'replaced',
+                detail: `replaced with ${replacement.medicine} (${replacement.category})`,
+                replacement,
+            };
+        }
+
+        if (!(await this.removeMedicineRow(row))) {
+            return null;
+        }
+
+        return { ...shortfall, action: 'removed', detail: 'taken off the prescription' };
+    }
+
+    /**
+     * The row a medicine was written into. The alert spells it the way the dropdown does,
+     * so the row is found by what it holds; where that does not match word for word — a
+     * centre that trims the strength off, a stray bracket — the opening of the name is
+     * enough to tell the three lines of a prescription apart.
+     */
+    private async medicineRowFor(medicine: string): Promise<Locator | null> {
+        const rows = this.medicineRows();
+        const held = await rows
+            .evaluateAll((elements) =>
+                elements.map((row) =>
+                    ((row as HTMLElement).innerText ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
+                )
+            )
+            .catch(() => [] as string[]);
+
+        const index = held.findIndex((text) =>
+            PrescriptionFormPage.namesTheMedicine(text, medicine)
+        );
+
+        return index >= 0 ? rows.nth(index) : null;
+    }
+
+    /**
+     * Whether what a row is showing names a given medicine — the whole of it, or enough of
+     * the opening to tell one prescription line from the two next to it.
+     */
+    private static namesTheMedicine(shown: string, medicine: string): boolean {
+        const held = shown.replace(/\s+/g, ' ').trim().toLowerCase();
+        const wanted = medicine.replace(/\s+/g, ' ').trim().toLowerCase();
+        const opening = wanted.split(' ').slice(0, 2).join(' ');
+
+        return (
+            wanted.length > 0 &&
+            (held.includes(wanted) || (opening.length > 2 && held.includes(opening)))
+        );
+    }
+
+    /** The same question asked of one row, for the rows that are not part of the grid. */
+    private async rowHolds(row: Locator, medicine: string): Promise<boolean> {
+        if (!(await row.isVisible().catch(() => false))) {
+            return false;
+        }
+
+        return PrescriptionFormPage.namesTheMedicine(await this.controlValue(row), medicine);
+    }
+
+    /**
+     * A column of a row that has already been filled — which is not something the
+     * accessible name can find, since a selectize drops its placeholder, and with it its
+     * name, the moment it holds a value.
+     *
+     * So where the name finds nothing the control is taken by the field behind it: every
+     * selectize is drawn next to the original <select> it replaced, and that one still
+     * carries the name the form submits ("dosage[]", "duration[]"). Only if that comes to
+     * nothing does it fall back to the control's position within its own row — right on
+     * this form, but the sort of thing that is right until a column is added.
+     */
+    private async filledRowField(
+        row: Locator,
+        name: RegExp,
+        submitted: RegExp,
+        column: number
+    ): Promise<Locator> {
+        const named = row.getByRole('textbox', { name }).first();
+
+        if (await named.isVisible().catch(() => false)) {
+            return named;
+        }
+
+        const controls = row.locator('.selectize-control');
+        const index = await controls
+            .evaluateAll((elements, pattern) => {
+                const matches = new RegExp(pattern, 'i');
+
+                return elements.findIndex((element) => {
+                    const original = element.previousElementSibling;
+                    const submits = original
+                        ? `${original.getAttribute('name') ?? ''} ${original.id}`
+                        : '';
+
+                    return matches.test(submits);
+                });
+            }, submitted.source)
+            .catch(() => -1);
+
+        return controls.nth(index >= 0 ? index : column);
+    }
+
+    /**
+     * Cuts a prescription line down to the least the form will accept, in the order that
+     * costs the consultation the least: how often first — it is the one of the three still
+     * picked at random, so "1-1-1" three times a day against "0-0-1" once is where the
+     * give is — then the duration, then the dosage.
+     *
+     * Reports what it changed, or null when every column was already at its lowest and the
+     * line has nothing left to give.
+     */
+    private async minimiseRowQuantity(row: Locator): Promise<string | null> {
+        const columns = PrescriptionFormPage.MEDICINE_COLUMNS;
+        const changes: string[] = [];
+
+        const howOften = await this.lowerColumn(
+            row,
+            /how often/i,
+            /freq|often/,
+            columns.howOften,
+            pickSmallestDoseOption
+        );
+        if (howOften) {
+            changes.push(`how often ${howOften}`);
+        }
+
+        const duration = await this.lowerColumn(
+            row,
+            /^Duration$/i,
+            /durat/,
+            columns.duration,
+            pickSmallestNumericOption
+        );
+        if (duration) {
+            changes.push(`duration ${duration}`);
+        }
+
+        const dosage = await this.lowerColumn(
+            row,
+            /^Dosage$/i,
+            /dosage|dose/,
+            columns.dosage,
+            pickSmallestNumericOption
+        );
+        if (dosage) {
+            changes.push(`dosage ${dosage}`);
+        }
+
+        return changes.length > 0 ? changes.join(', ') : null;
+    }
+
+    /**
+     * Takes one column as low as its dropdown goes, reporting the move as "was → now", and
+     * null where it did not move: the column was already at its lowest, or it is a typed
+     * box on this centre with no lower entry to pick.
+     */
+    private async lowerColumn(
+        row: Locator,
+        name: RegExp,
+        submitted: RegExp,
+        column: number,
+        pick: (page: Page, field: Locator, options?: PickOptions) => Promise<string | null>
+    ): Promise<string | null> {
+        const field = await this.filledRowField(row, name, submitted, column);
+
+        if (!(await isVisibleWithin(field, 3000))) {
+            return null;
+        }
+
+        const before = await this.controlValue(field);
+        const picked = await pick(this.page, field, { timeout: 5000 });
+
+        if (picked === null || picked === before) {
+            return null;
+        }
+
+        return `${before || 'blank'} → ${picked}`;
+    }
+
+    /** What a selectize is showing at the moment, value or placeholder. */
+    private async controlValue(field: Locator): Promise<string> {
+        return field
+            .innerText()
+            .then((text) => text.replace(/\s+/g, ' ').trim())
+            .catch(() => '');
+    }
+
+    /** How many rows of the medicine grid actually hold a medicine. */
+    private async filledMedicineRowCount(): Promise<number> {
+        return this.medicineRows()
+            .evaluateAll(
+                (elements) =>
+                    elements.filter(
+                        (row) =>
+                            row.querySelector(
+                                '.selectize-control.medicine_list .selectize-input.has-items'
+                            ) !== null
+                    ).length
+            )
+            .catch(() => 0);
+    }
+
+    /**
+     * Empties a row so the form treats it as one of the blank ones it pre-renders — used
+     * where the row has no delete control to click, and to clear a line before a different
+     * medicine is written into it.
+     *
+     * Selectize hangs its instance off the original control, and clearing through that is
+     * the only thing the widget believes: blanking the input it draws leaves the value
+     * that actually gets submitted exactly where it was.
+     */
+    private async clearRow(row: Locator): Promise<boolean> {
+        return row
+            .evaluate((element) => {
+                let cleared = false;
+
+                element.querySelectorAll('select, input').forEach((node) => {
+                    const instance = (
+                        node as Element & { selectize?: { clear: (silent?: boolean) => void } }
+                    ).selectize;
+
+                    if (instance) {
+                        instance.clear(true);
+                        cleared = true;
+                    } else if (node instanceof HTMLInputElement && node.type === 'text') {
+                        node.value = '';
+                    }
+                });
+
+                return cleared;
+            })
+            .catch(() => false);
+    }
+
+    /**
+     * Takes a prescription line off the form, through the row's own delete control where
+     * it has one and by emptying it where it does not.
+     */
+    private async removeMedicineRow(row: Locator): Promise<boolean> {
+        const rows = this.medicineRows();
+        const remove = row.locator('#deleteIcon, [onclick*="deleteCurrentRow"]').first();
+
+        if (await isVisibleWithin(remove, 3000)) {
+            const before = await rows.count();
+            await remove.click().catch(() => undefined);
+
+            const went = await expect(rows)
+                .toHaveCount(before - 1, { timeout: 5000 })
+                .then(() => true)
+                .catch(() => false);
+
+            if (went) {
+                return true;
+            }
+        }
+
+        return this.clearRow(row);
+    }
+
+    /**
+     * Writes a different medicine into a row, at the smallest quantity the form offers —
+     * the alert's own first suggestion, and the only way a consultation whose single
+     * medicine the centre has run out of still gets saved.
+     */
+    private async replaceMedicine(row: Locator, avoid: string[]): Promise<MedicineLine | null> {
+        if (this.consultation === null) {
+            return null;
+        }
+
+        await this.clearRow(row);
+
+        const alreadyPrescribed = [...avoid, ...(await this.existingRowValues(this.medicineRows()))];
+        const line = await this.fillMedicineRow(row, this.consultation, alreadyPrescribed);
+
+        if (line === null) {
+            return null;
+        }
+
+        await this.minimiseRowQuantity(row);
+
+        return line;
+    }
+
+    /** Keeps what the form now holds and what the run reports about it in step. */
+    private applyAdjustment(adjustment: StockAdjustment, summary?: ConsultationSummary): void {
+        if (!summary) {
+            return;
+        }
+
+        const index = summary.medicines.findIndex(
+            (line) =>
+                line.medicine !== '' &&
+                PrescriptionFormPage.namesTheMedicine(adjustment.medicine, line.medicine)
+        );
+
+        if (index < 0) {
+            if (
+                adjustment.action === 'removed' &&
+                summary.otcMedicine !== null &&
+                PrescriptionFormPage.namesTheMedicine(adjustment.medicine, summary.otcMedicine)
+            ) {
+                summary.otcMedicine = null;
+            }
+
+            return;
+        }
+
+        if (adjustment.action === 'removed') {
+            summary.medicines.splice(index, 1);
+        } else if (adjustment.action === 'replaced' && adjustment.replacement) {
+            summary.medicines.splice(index, 1, adjustment.replacement);
+        }
+    }
+
 
     /**
      * Approves the consultation that was just written, which is what the summary the save

@@ -6,8 +6,24 @@ import { LoginPage } from '../pages/login.page';
 import {
     PrescriptionFormPage,
     type ConsultationSummary,
+    type MedicineLine,
 } from '../pages/prescription-form.page';
 import { runModuleCases } from '../support/module-case';
+
+/** The prescription as one line, the way the report and the console show it. */
+function describePrescription(lines: MedicineLine[]): string {
+    return lines
+        .map(
+            (line) =>
+                `${line.medicine} (${line.category})` +
+                `${line.dosage ? ` ${line.dosage}` : ''}` +
+                `${line.frequency ? ` ${line.frequency}` : ''}` +
+                `${line.duration ? ` for ${line.duration}` : ''}` +
+                `${line.instruction ? `, ${line.instruction}` : ''}` +
+                `${line.route ? `, ${line.route}` : ''}`
+        )
+        .join(' | ');
+}
 
 // Paced to be watchable, the way full-consultation.spec.ts is. Raise it for a slower
 // walkthrough (E2E_SLOW_MO=1500) or drop it to 0 for full speed. Pair with --headed, or
@@ -209,17 +225,7 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
                         `The same medicine was prescribed twice: ${prescribed.join(', ')}`
                     ).toBe(prescribed.length);
 
-                    const written = summary.medicines
-                        .map(
-                            (line) =>
-                                `${line.medicine} (${line.category})` +
-                                `${line.dosage ? ` ${line.dosage}` : ''}` +
-                                `${line.frequency ? ` ${line.frequency}` : ''}` +
-                                `${line.duration ? ` for ${line.duration}` : ''}` +
-                                `${line.instruction ? `, ${line.instruction}` : ''}` +
-                                `${line.route ? `, ${line.route}` : ''}`
-                        )
-                        .join(' | ');
+                    const written = describePrescription(summary.medicines);
 
                     test.info().annotations.push({ type: 'prescription', description: written });
                     console.log(`Prescription ${prescriptionId}: ${written}`);
@@ -268,8 +274,38 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
                 // The button is the form's submit, so a save that worked leaves the page;
                 // one that did not reports the app's own reason instead of being clicked
                 // again.
+                //
+                // The exception is the stock check: a centre that holds one of a medicine
+                // refuses the whole save over that line and says what to do about it, so
+                // the run cuts the quantity back, takes the medicine off, or prescribes
+                // another in its place and saves again. That is the app behaving
+                // correctly, so it is reported as what was written rather than as a
+                // failure - and the summary is brought in line with it, since what went
+                // in is no longer quite what was filled in.
                 run: async () => {
-                    await prescriptionForm.saveAndExpectLeavingForm(dialogMessages);
+                    const adjustments = await prescriptionForm.saveAndExpectLeavingForm(
+                        dialogMessages,
+                        summary
+                    );
+
+                    for (const adjustment of adjustments) {
+                        test.info().annotations.push({
+                            type: 'stock',
+                            description:
+                                `${adjustment.medicine}: ${adjustment.available} in stock against ` +
+                                `${adjustment.prescribed} prescribed — ${adjustment.detail}`,
+                        });
+                    }
+
+                    // What went in is no longer what was filled in, so the run says both
+                    // rather than leaving the earlier annotation to be read as the truth.
+                    if (adjustments.length > 0) {
+                        test.info().annotations.push({
+                            type: 'prescription as saved',
+                            description: describePrescription(summary.medicines),
+                        });
+                    }
+
                     console.log(
                         `Saved prescription ${prescriptionId} — the run is now on ${page.url()}`
                     );

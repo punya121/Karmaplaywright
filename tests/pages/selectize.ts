@@ -142,20 +142,21 @@ export async function pickRandomOption(
 }
 
 /**
- * Picks the lowest number a control offers, reading the first number out of each option
- * so "2", "2 Days" and "0.5 ml" all count, and ignoring entries with no number in them.
+ * Picks whichever option a scoring function rates lowest, skipping the ones it cannot
+ * score at all.
  *
  * Quantities are chosen this way rather than at random because the form checks what is
  * prescribed against the centre's stock and refuses the save when it runs over: "Available
  * Quantity in stock is 52 || Prescribed Quantity is 120". A random 8 a day for 15 days is
  * exactly that refusal, and it says nothing about whether the form itself works.
  */
-export async function pickSmallestNumericOption(
+async function pickLowestOption(
     page: Page,
     field: Locator,
+    score: (text: string) => number,
     options: PickOptions = {}
 ): Promise<string | null> {
-    const { filter = notAPlaceholder, timeout = 5000 } = options;
+    const { filter = notAPlaceholder, exclude = [], timeout = 5000 } = options;
 
     const dropdown = await openSelectize(field);
 
@@ -170,25 +171,80 @@ export async function pickSmallestNumericOption(
         }
     }
 
-    const numbered = (await items.allInnerTexts())
+    const scored = (await items.allInnerTexts())
         .map((text, index) => ({ text: text.replace(/\s+/g, ' ').trim(), index }))
-        .map((option) => ({
-            ...option,
-            value: Number.parseFloat(option.text.replace(/[^\d.]+/g, ' ').trim().split(/\s+/)[0] ?? ''),
-        }))
+        .filter(({ text }) => text.length > 0 && !exclude.includes(text))
+        .map((option) => ({ ...option, value: score(option.text) }))
         .filter((option) => Number.isFinite(option.value) && option.value > 0);
 
-    if (numbered.length === 0) {
+    if (scored.length === 0) {
         await page.keyboard.press('Escape').catch(() => undefined);
         return null;
     }
 
-    const smallest = numbered.reduce((lowest, next) => (next.value < lowest.value ? next : lowest));
+    const lowest = scored.reduce((best, next) => (next.value < best.value ? next : best));
 
-    await items.nth(smallest.index).click();
+    await items.nth(lowest.index).click();
     await page.keyboard.press('Escape').catch(() => undefined);
 
-    return smallest.text;
+    return lowest.text;
+}
+
+/** Every number an option carries, in the order they read. */
+function numbersIn(text: string): number[] {
+    return (text.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+}
+
+/**
+ * Picks the lowest number a control offers, reading the first number out of each option
+ * so "2", "2 Days" and "0.5 ml" all count, and ignoring entries with no number in them.
+ */
+export async function pickSmallestNumericOption(
+    page: Page,
+    field: Locator,
+    options: PickOptions = {}
+): Promise<string | null> {
+    return pickLowestOption(page, field, (text) => numbersIn(text)[0] ?? Number.NaN, options);
+}
+
+/** How the frequency column spells a dose count when it spells it in words. */
+const doseWords: [RegExp, number][] = [
+    [/\bonce\b|\bo\.?d\.?\b|\bdaily\b|\bhs\b|\bbedtime\b/i, 1],
+    [/\btwice\b|\bb\.?d\.?\b|\bbid\b/i, 2],
+    [/\bthrice\b|\bthree times\b|\btds\b|\btid\b/i, 3],
+    [/\bfour times\b|\bqid\b|\bqds\b/i, 4],
+];
+
+/**
+ * How many doses a day an option works out to, which is not the same question as the
+ * smallest number in it: How Often reads "1-0-1" - morning, afternoon, night - so what
+ * counts is the three added together (two doses a day), not the one it starts with.
+ * Where an option carries no digits at all ("Once a day", "BD") the wording is read
+ * instead, and anything that answers to neither is passed over rather than guessed at.
+ */
+function dosesPerDay(text: string): number {
+    const numbers = numbersIn(text);
+
+    if (numbers.length > 0) {
+        return numbers.reduce((total, next) => total + next, 0);
+    }
+
+    const word = doseWords.find(([pattern]) => pattern.test(text));
+
+    return word ? word[1] : Number.NaN;
+}
+
+/**
+ * Picks the How Often entry that comes to the fewest doses a day - the lever with the
+ * most give in it when the centre's stock will not cover what was prescribed, since the
+ * form multiplies this by the dosage and the duration to get the quantity it checks.
+ */
+export async function pickSmallestDoseOption(
+    page: Page,
+    field: Locator,
+    options: PickOptions = {}
+): Promise<string | null> {
+    return pickLowestOption(page, field, dosesPerDay, options);
 }
 
 /**
