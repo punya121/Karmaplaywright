@@ -9,7 +9,22 @@ import { PrescriptionFormPage } from '../pages/prescription-form.page';
 // walkthrough (E2E_SLOW_MO=1500) or drop it to 0 for full speed. Pair with --headed, or
 // there is nothing to watch.
 test.use({
-    launchOptions: { slowMo: Number(process.env.E2E_SLOW_MO ?? 800) },
+    launchOptions: {
+        slowMo: Number(process.env.E2E_SLOW_MO ?? 800),
+        args: [
+            // Chrome's camera and microphone prompt is browser chrome, drawn outside the
+            // page, so no locator can reach it and a run that waits for one hangs behind
+            // it. These two settle it before it is ever asked: the first answers the
+            // prompt itself, the second hands the call a synthetic camera and microphone
+            // so a machine with neither - every CI box, and this one headless - still
+            // gets a working media stream instead of a failed one.
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+        ],
+    },
+    // Granted through the context as well, so the page's own getUserMedia is answered
+    // even where the flags above are ignored.
+    permissions: ['camera', 'microphone'],
 });
 
 /**
@@ -53,10 +68,19 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
     // catalogue, and all of it at demo pace.
     test.setTimeout(600000);
 
+    /**
+     * Whether this run was the one that brought the doctor on duty. A doctor who was
+     * already checked in was someone else's doing and is left that way - checking them
+     * out would take the centre's own next handover down with it, since Doctor Selection
+     * only offers a doctor who is on duty.
+     */
+    let cameOnDutyThisRun = false;
+
     test.afterEach(async ({ page }) => {
-        // Off duty first, then out. A run that only logs out leaves the doctor checked in
-        // and holding a session slot on a shared UAT account.
-        await new DoctorHomePage(page).checkOut().catch(() => undefined);
+        if (cameOnDutyThisRun) {
+            await new DoctorHomePage(page).checkOut().catch(() => undefined);
+        }
+
         await new LoginPage(page).logout();
     });
 
@@ -78,6 +102,7 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
         //    left to whatever state the previous run happened to leave behind.
         await doctorHome.open();
         const cameOnDuty = await doctorHome.ensureCheckedIn();
+        cameOnDutyThisRun = cameOnDuty;
         test.info().annotations.push({
             type: 'doctor',
             description: `${doctorUsername}, ${cameOnDuty ? 'checked in by this run' : 'already on duty'}`,
@@ -89,14 +114,20 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
         const waiting = await doctorHome.selectRandomWaitingPatient();
         test.info().annotations.push({
             type: 'patient',
-            description: `queue row ${waiting.index + 1}${waiting.displayId ? ` — ${waiting.displayId}` : ''}: ${waiting.summary}`,
+            description:
+                `queue row ${waiting.index + 1}${waiting.displayId ? ` — ${waiting.displayId}` : ''}: ` +
+                `${waiting.summary} (opened by ${
+                    waiting.via === 'attending'
+                        ? 'the Attending radio'
+                        : 'the Prescription View link, already attended'
+                })`,
         });
         console.log(`Opening consultation for queue row ${waiting.index + 1}: ${waiting.summary}`);
 
         // 4. Open their prescription form, and hold the form to the id the queue row
         //    opened — the queue is the doctor's whole list, so landing on the right screen
         //    for the wrong patient is the failure worth catching.
-        const prescriptionId = await doctorHome.openPrescriptionForm();
+        const prescriptionId = await doctorHome.openPrescriptionForm(waiting);
         await prescriptionForm.expectLoaded(prescriptionId);
         await prescriptionForm.startVideoCallIfRequested();
 
@@ -165,5 +196,22 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
         await prescriptionForm.saveAndExpectLeavingForm(dialogMessages);
 
         console.log(`Saved prescription ${prescriptionId} — the run is now on ${page.url()}`);
+
+        // 7. Approve it. The save comes back to the patient's summary, where the written
+        //    consultation waits on the doctor's own approval — until that is given the
+        //    queue row stays "Pending Doctor Approval" and the consultation is not done.
+        const approved = await prescriptionForm.approveIfOffered();
+
+        test.info().annotations.push({
+            type: 'approval',
+            description: approved
+                ? 'approved on the patient summary after saving'
+                : 'no Approve button was offered, so nothing was left to approve',
+        });
+        console.log(
+            approved
+                ? `Approved prescription ${prescriptionId}`
+                : `Prescription ${prescriptionId} offered no Approve button`
+        );
     });
 });

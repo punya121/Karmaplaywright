@@ -68,6 +68,34 @@ export default defineConfig({
 
   /* Configure projects for major browsers */
   projects: [
+    /*
+     * The consultation flow, in the order it has to happen: a prescription only reaches
+     * a doctor's queue once Full Consultation has registered the patient and handed it
+     * over on Doctor Selection, so Doctor Consultation has nothing to open until that
+     * has finished.
+     *
+     * `dependencies` is what orders them. Playwright runs a project's dependencies to
+     * completion first, and skips the dependent project entirely if one of them fails —
+     * so a failed Full Consultation stops Doctor Consultation from running at all,
+     * without any waiting or polling in the specs themselves. Both reuse the same
+     * fixtures, page objects, .env and `use` block as every other project here.
+     *
+     * Run the pair with --project=doctor-consultation: the dependency comes first on its
+     * own. Add --no-deps to run the doctor half by itself against a queue that already
+     * has someone in it.
+     */
+    {
+      name: 'full-consultation',
+      testMatch: /patient[\\/]full-consultation\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'doctor-consultation',
+      testMatch: /doctor[\\/]doctor-consultation\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+      dependencies: ['full-consultation'],
+    },
+
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },

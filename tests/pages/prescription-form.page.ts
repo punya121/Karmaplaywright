@@ -5,6 +5,7 @@ import {
     pickOrType,
     pickRandom,
     pickRandomOption,
+    pickSmallestNumericOption,
     randomInt,
 } from './selectize';
 
@@ -126,6 +127,11 @@ export class PrescriptionFormPage {
         const diagnosticTests = await this.addDiagnosticTests(consultation.diagnosticTestCount);
         const referral = consultation.includeReferral ? await this.addReferral() : null;
 
+        // A blank symptom row anywhere on the grid fails the whole submit, so the form is
+        // swept before it is handed back to be saved - a row this run could not fill, or
+        // one the consultation came back with.
+        await this.removeEmptySymptomRows();
+
         return {
             prescriptionId,
             provisionalDiagnosis,
@@ -160,8 +166,102 @@ export class PrescriptionFormPage {
     }
 
     /**
-     * Records symptoms, each a distinct random pick. "Add Symptom" is pressed between
-     * rows rather than before the first, because the grid opens with one row already on it.
+     * What a grid already holds: the text of each row's first control, empty string for a
+     * row nobody has filled. A consultation being re-opened brings its saved rows back
+     * with it, and picking one of those again would either duplicate a line or quietly
+     * replace it, so they are excluded from the run's own picks.
+     */
+    private async existingRowValues(rows: Locator): Promise<string[]> {
+        return rows
+            .evaluateAll((elements) =>
+                elements.map((row) => {
+                    const first = row.querySelector('.selectize-input');
+                    return first ? (first.textContent ?? '').replace(/\s+/g, ' ').trim() : '';
+                })
+            )
+            .catch(() => []);
+    }
+
+    /**
+     * The row to write the next entry into: the first one still empty, or a freshly added
+     * one once every row holds something.
+     *
+     * Counting from zero and expecting the grid to hold index+1 rows was only ever right
+     * on a consultation nobody had written yet. A re-opened one comes back with its saved
+     * rows on the grid - four symptoms from an earlier run, say - so the first "Add" left
+     * it holding five rows where the run expected two, and the wait timed out on a grid
+     * that was behaving perfectly.
+     */
+    private async nextEntryRow(rows: Locator, addButton: Locator): Promise<Locator | null> {
+        const emptyIndex = await rows
+            .evaluateAll((elements) =>
+                elements.findIndex((row) => {
+                    const first = row.querySelector('.selectize-input');
+                    return !!first && !first.classList.contains('has-items');
+                })
+            )
+            .catch(() => -1);
+
+        if (emptyIndex >= 0) {
+            return rows.nth(emptyIndex);
+        }
+
+        if (!(await isVisibleWithin(addButton, 5000))) {
+            return null;
+        }
+
+        const before = await rows.count();
+        await addButton.click();
+        await expect(rows).toHaveCount(before + 1, { timeout: 10000 });
+
+        return rows.nth(before);
+    }
+
+    /**
+     * Drops a row that ended up with nothing in it, reporting whether it went.
+     *
+     * An empty row cannot just be left behind. The symptom select is a required one, so
+     * the browser refuses the entire submit - "symptoms_list[] is invalid: Please select
+     * an item in the list" - and the consultation is never written, however complete the
+     * rest of the form is. Every row carries its own delete control for this:
+     * <img id="deleteIcon" onclick="deleteCurrentRow($(this));add_removeSymptomsAlert(...)">.
+     */
+    private async removeRowIfEmpty(row: Locator): Promise<boolean> {
+        const filled = await row
+            .locator('.selectize-input.has-items')
+            .count()
+            .catch(() => 0);
+
+        if (filled > 0) {
+            return false;
+        }
+
+        // The id repeats on every row, so it is only ever used through the row itself.
+        const remove = row.locator('#deleteIcon, [onclick*="deleteCurrentRow"]').first();
+
+        if (!(await isVisibleWithin(remove, 3000))) {
+            return false;
+        }
+
+        await remove.click().catch(() => undefined);
+        return true;
+    }
+
+    /**
+     * Clears any symptom row left blank before the form is submitted. Walked from the
+     * bottom up so removing one does not shift the rows still to be checked.
+     */
+    private async removeEmptySymptomRows(): Promise<void> {
+        const rows = this.symptomRows();
+
+        for (let index = (await rows.count()) - 1; index >= 0; index -= 1) {
+            await this.removeRowIfEmpty(rows.nth(index));
+        }
+    }
+
+    /**
+     * Records symptoms, each a distinct random pick, written into whichever rows are free
+     * rather than into the first ones on the grid.
      */
     async addSymptoms(count: number): Promise<string[]> {
         const symptoms: string[] = [];
@@ -170,27 +270,29 @@ export class PrescriptionFormPage {
             return symptoms;
         }
 
-        for (let index = 0; index < count; index += 1) {
-            if (index > 0) {
-                const addSymptom = this.page.getByRole('button', { name: /add symptom/i }).first();
-                if (!(await isVisibleWithin(addSymptom, 5000))) {
-                    break;
-                }
-                await addSymptom.click();
-                await expect(this.symptomRows()).toHaveCount(index + 1, { timeout: 10000 });
-            }
+        const alreadyOnTheForm = await this.existingRowValues(this.symptomRows());
 
-            const row = this.symptomRows().nth(index);
+        for (let index = 0; index < count; index += 1) {
+            const row = await this.nextEntryRow(
+                this.symptomRows(),
+                this.page.getByRole('button', { name: /add symptom/i }).first()
+            );
+
+            if (row === null) {
+                break;
+            }
 
             // The symptom itself is the row's first control; the columns after it are the
             // ones the form names, read left to right the way they are on screen.
             const symptom = await pickRandomOption(
                 this.page,
                 row.locator('.selectize-control').first(),
-                { exclude: symptoms, timeout: 10000 }
+                { exclude: [...alreadyOnTheForm, ...symptoms], timeout: 10000 }
             );
 
             if (symptom === null) {
+                // Nothing was written into it, and a blank symptom row blocks the save.
+                await this.removeRowIfEmpty(row);
                 break;
             }
 
@@ -228,6 +330,26 @@ export class PrescriptionFormPage {
     }
 
     /**
+     * A quantity column: the smallest entry its dropdown offers, or the generated
+     * fallback typed in where the column is a plain box on this environment.
+     */
+    private async fillSmallestRowField(
+        row: Locator,
+        name: RegExp,
+        fallback: string
+    ): Promise<string | null> {
+        const field = row.getByRole('textbox', { name }).first();
+
+        if (!(await isVisibleWithin(field, 3000))) {
+            return null;
+        }
+
+        const smallest = await pickSmallestNumericOption(this.page, field, { timeout: 5000 });
+
+        return smallest ?? pickOrType(this.page, field, fallback);
+    }
+
+    /**
      * The medicine rows, minus the over-the-counter row — #OTCRow carries the same
      * medicine control, so it would otherwise be filled twice.
      */
@@ -249,15 +371,22 @@ export class PrescriptionFormPage {
             return lines;
         }
 
-        const available = await this.medicineRows().count();
-        const rowsToFill = Math.min(consultation.medicineCount, available);
+        // "Add a drug" and "Add an OTC Item" are both id="AddDrug", so the button is taken
+        // by its own wording rather than by that id.
+        const addDrug = this.page.getByRole('button', { name: /^\s*Add a drug\s*$/i }).first();
+        const alreadyPrescribed = await this.existingRowValues(this.medicineRows());
 
-        for (let index = 0; index < rowsToFill; index += 1) {
-            const line = await this.fillMedicineRow(
-                this.medicineRows().nth(index),
-                consultation,
-                lines.map((filled) => filled.medicine)
-            );
+        for (let index = 0; index < consultation.medicineCount; index += 1) {
+            const row = await this.nextEntryRow(this.medicineRows(), addDrug);
+
+            if (row === null) {
+                break;
+            }
+
+            const line = await this.fillMedicineRow(row, consultation, [
+                ...alreadyPrescribed,
+                ...lines.map((filled) => filled.medicine),
+            ]);
 
             if (line === null) {
                 break;
@@ -312,9 +441,13 @@ export class PrescriptionFormPage {
 
         await expect(row).toContainText(medicine, { useInnerText: true });
 
-        const dosage = await this.fillRowField(row, /^Dosage$/i, consultation.dosage);
+        // How much and for how long are the two the form multiplies into a quantity and
+        // checks against the centre's stock, refusing the save when it runs over - so they
+        // are taken as low as the form allows rather than at random. Everything else on
+        // the line is still whatever the live dropdowns happen to offer.
+        const dosage = await this.fillSmallestRowField(row, /^Dosage$/i, consultation.dosage);
         const frequency = await this.fillRowField(row, /how often/i, consultation.frequency);
-        const duration = await this.fillRowField(row, /^Duration$/i, consultation.duration);
+        const duration = await this.fillSmallestRowField(row, /^Duration$/i, consultation.duration);
         const instruction = await this.fillRowField(row, /how to take/i, consultation.instruction);
         const route = await pickRandomOption(
             this.page,
@@ -374,23 +507,26 @@ export class PrescriptionFormPage {
             return tests;
         }
 
+        const alreadyOrdered = await this.existingRowValues(this.diagnosticRows());
+
         for (let index = 0; index < count; index += 1) {
-            if (index > 0) {
-                const addTest = this.page.locator('#AddTest');
-                if (!(await isVisibleWithin(addTest, 5000))) {
-                    break;
-                }
-                await addTest.click();
-                await expect(this.diagnosticRows()).toHaveCount(index + 1, { timeout: 10000 });
+            const row = await this.nextEntryRow(
+                this.diagnosticRows(),
+                this.page.locator('#AddTest')
+            );
+
+            if (row === null) {
+                break;
             }
 
             const test = await pickRandomOption(
                 this.page,
-                this.diagnosticRows().nth(index).locator('.selectize-control').first(),
-                { exclude: tests, timeout: 10000 }
+                row.locator('.selectize-control').first(),
+                { exclude: [...alreadyOrdered, ...tests], timeout: 10000 }
             );
 
             if (test === null) {
+                await this.removeRowIfEmpty(row);
                 break;
             }
 
@@ -548,7 +684,52 @@ export class PrescriptionFormPage {
         }
 
         await page.waitForLoadState('load');
-        await expect(page.getByRole('link', { name: 'Home' })).toBeVisible({ timeout: 15000 });
+
+        // A saved consultation comes back to the patient's summary. On the doctor's side
+        // the nav Home is an image link with no accessible name at all, so "Home" is a
+        // centre-page landmark that never matches here - it failed a save that had in fact
+        // gone through, with the prescription written and the app already back on the
+        // summary. What the app returned to is what gets checked instead.
+        await expect(
+            page,
+            'The prescription was saved but the app did not come back to the patient summary'
+        ).toHaveURL(/PrescriptionView|DoctorHome/i, { timeout: 20000 });
+    }
+
+    /**
+     * Approves the consultation that was just written, which is what the summary the save
+     * returns to is waiting for - until then the queue row reads "Pending Doctor Approval".
+     *
+     * The control is <input id="Approve" name="Approve" value="Approve" onclick="load()">,
+     * and the page asks confirm("Are you sure you want to approve?") before it goes
+     * through; that is answered by the handler captureDialogs() puts in place, which
+     * accepts. Where a centre wants batch and expiry details first, a modal comes up in
+     * front of it carrying "Save & Continue Approve", so that is submitted when it appears.
+     *
+     * Reports whether there was anything to approve, so a run can say so rather than
+     * leaving it as a silent no-op.
+     */
+    async approveIfOffered(): Promise<boolean> {
+        const approve = this.page
+            .getByRole('button', { name: /^\s*Approve\s*$/i })
+            .or(this.page.locator('#Approve'))
+            .first();
+
+        if (!(await isVisibleWithin(approve, 5000))) {
+            return false;
+        }
+
+        await approve.click();
+
+        const batchThenApprove = this.page.locator('#submitBatchBeforeApprove');
+
+        if (await isVisibleWithin(batchThenApprove, 3000)) {
+            await batchThenApprove.click().catch(() => undefined);
+        }
+
+        await this.page.waitForLoadState('load').catch(() => undefined);
+
+        return true;
     }
 
     /**

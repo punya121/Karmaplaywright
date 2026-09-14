@@ -35,25 +35,55 @@ export async function isVisibleWithin(locator: Locator, timeout: number): Promis
         .catch(() => false);
 }
 
-/**
- * Opens a selectize through its wrapper. Passing the inner input works too - the wrapper
- * is found from it - which is what lets a field be addressed by its accessible name.
- */
-export async function openSelectize(field: Locator): Promise<void> {
-    const opened = await field
-        .evaluate((element) => {
-            const wrapper = element.closest('.selectize-control');
-            if (!wrapper) {
-                return false;
-            }
-            (wrapper as HTMLElement).click();
-            return true;
-        })
-        .catch(() => false);
+/** Marks the dropdown belonging to the control a run has just opened. */
+const OPEN_DROPDOWN_ATTRIBUTE = 'data-pw-selectize-open';
 
-    if (!opened) {
-        await field.click();
-    }
+/**
+ * The .selectize-control wrapper for a field, whether the wrapper itself or the inner
+ * input was passed - which is what lets a field be addressed by its accessible name.
+ */
+function controlWrapper(field: Locator): Locator {
+    return field
+        .locator('xpath=ancestor-or-self::div[contains(@class,"selectize-control")][1]')
+        .first();
+}
+
+/**
+ * Opens a selectize and hands back its own dropdown.
+ *
+ * Two things here were getting fields filled with another control's values:
+ *
+ *   - Selectize opens on mousedown, and a JS element.click() fires no mousedown at all,
+ *     so opening a control that way does nothing. The control stays shut while some
+ *     other list - the diagnosis picker is open from the moment the prescription form
+ *     loads - is left showing, and options read off the page then belong to that one.
+ *     A real click is what opens the control a run means to open.
+ *   - Selectize hangs its dropdown off <body> rather than off the control, so there is
+ *     no way down to it through the DOM. The control's own selectize instance knows
+ *     which element is its dropdown, so it is tagged here and the options are read back
+ *     from that rather than from whatever happens to be open.
+ */
+export async function openSelectize(field: Locator): Promise<Locator> {
+    const wrapper = controlWrapper(field);
+
+    await wrapper.click({ timeout: 10000 }).catch(async () => {
+        await field.click({ force: true }).catch(() => undefined);
+    });
+
+    await wrapper
+        .evaluate((element, attribute) => {
+            document
+                .querySelectorAll(`[${attribute}]`)
+                .forEach((node) => node.removeAttribute(attribute));
+
+            const select = element.previousElementSibling as
+                | (Element & { selectize?: { $dropdown?: HTMLElement[] } })
+                | null;
+            select?.selectize?.$dropdown?.[0]?.setAttribute(attribute, '1');
+        }, OPEN_DROPDOWN_ATTRIBUTE)
+        .catch(() => undefined);
+
+    return field.page().locator(`[${OPEN_DROPDOWN_ATTRIBUTE}]`);
 }
 
 export type PickOptions = {
@@ -78,13 +108,21 @@ export async function pickRandomOption(
 ): Promise<string | null> {
     const { filter = notAPlaceholder, exclude = [], timeout = 5000 } = options;
 
-    await openSelectize(field);
+    const dropdown = await openSelectize(field);
 
-    const items = page.locator('.selectize-dropdown:visible .option').filter({ hasText: filter });
+    let items = dropdown.locator('.option').filter({ hasText: filter });
 
     if (!(await isVisibleWithin(items.first(), timeout))) {
-        await page.keyboard.press('Escape').catch(() => undefined);
-        return null;
+        // This control's own list never came up. Fall back to whatever is open, which is
+        // how this read before, rather than giving up on a control whose selectize
+        // instance could not be read back - but only after its own list has been waited
+        // for, so another control's options are never mistaken for this one's.
+        items = page.locator('.selectize-dropdown:visible .option').filter({ hasText: filter });
+
+        if (!(await isVisibleWithin(items.first(), 1000))) {
+            await page.keyboard.press('Escape').catch(() => undefined);
+            return null;
+        }
     }
 
     const candidates = (await items.allInnerTexts())
@@ -101,6 +139,56 @@ export async function pickRandomOption(
     await page.keyboard.press('Escape').catch(() => undefined);
 
     return chosen.text;
+}
+
+/**
+ * Picks the lowest number a control offers, reading the first number out of each option
+ * so "2", "2 Days" and "0.5 ml" all count, and ignoring entries with no number in them.
+ *
+ * Quantities are chosen this way rather than at random because the form checks what is
+ * prescribed against the centre's stock and refuses the save when it runs over: "Available
+ * Quantity in stock is 52 || Prescribed Quantity is 120". A random 8 a day for 15 days is
+ * exactly that refusal, and it says nothing about whether the form itself works.
+ */
+export async function pickSmallestNumericOption(
+    page: Page,
+    field: Locator,
+    options: PickOptions = {}
+): Promise<string | null> {
+    const { filter = notAPlaceholder, timeout = 5000 } = options;
+
+    const dropdown = await openSelectize(field);
+
+    let items = dropdown.locator('.option').filter({ hasText: filter });
+
+    if (!(await isVisibleWithin(items.first(), timeout))) {
+        items = page.locator('.selectize-dropdown:visible .option').filter({ hasText: filter });
+
+        if (!(await isVisibleWithin(items.first(), 1000))) {
+            await page.keyboard.press('Escape').catch(() => undefined);
+            return null;
+        }
+    }
+
+    const numbered = (await items.allInnerTexts())
+        .map((text, index) => ({ text: text.replace(/\s+/g, ' ').trim(), index }))
+        .map((option) => ({
+            ...option,
+            value: Number.parseFloat(option.text.replace(/[^\d.]+/g, ' ').trim().split(/\s+/)[0] ?? ''),
+        }))
+        .filter((option) => Number.isFinite(option.value) && option.value > 0);
+
+    if (numbered.length === 0) {
+        await page.keyboard.press('Escape').catch(() => undefined);
+        return null;
+    }
+
+    const smallest = numbered.reduce((lowest, next) => (next.value < lowest.value ? next : lowest));
+
+    await items.nth(smallest.index).click();
+    await page.keyboard.press('Escape').catch(() => undefined);
+
+    return smallest.text;
 }
 
 /**
