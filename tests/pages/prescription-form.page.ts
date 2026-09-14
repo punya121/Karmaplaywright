@@ -41,6 +41,7 @@ export type ConsultationSummary = {
     otcMedicine: string | null;
     diagnosticTests: string[];
     referral: string | null;
+    reviewDate: string | null;
 };
 
 /**
@@ -125,7 +126,12 @@ export class PrescriptionFormPage {
         const medicines = await this.addMedicines(consultation);
         const otcMedicine = consultation.includeOtc ? await this.addOtcMedicine() : null;
         const diagnosticTests = await this.addDiagnosticTests(consultation.diagnosticTestCount);
-        const referral = consultation.includeReferral ? await this.addReferral() : null;
+        const referral = await this.addReferral(consultation);
+
+        // Review After is the form's own required field - a red asterisk on the Review
+        // fieldset, and the app refuses the submit without it - so it is set on every
+        // run, not only on the ones that also refer the patient on.
+        const reviewDate = await this.setReviewDate();
 
         // A blank symptom row anywhere on the grid fails the whole submit, so the form is
         // swept before it is handed back to be saved - a row this run could not fill, or
@@ -140,6 +146,7 @@ export class PrescriptionFormPage {
             otcMedicine,
             diagnosticTests,
             referral,
+            reviewDate,
         };
     }
 
@@ -537,11 +544,31 @@ export class PrescriptionFormPage {
     }
 
     /**
-     * Refers the patient on: a department picked at random from whatever this centre
-     * offers, and an appointment on a random day the calendar will actually accept.
+     * The Referred To control — <select id="referral"> behind a selectize whose
+     * placeholder reads "--Select a Department--". Addressed by the id rather than by
+     * that placeholder alone, because a control that already holds a value drops its
+     * placeholder and would stop being findable by name.
      */
-    async addReferral(): Promise<string | null> {
-        const department = this.page.getByRole('textbox', { name: /select a department/i }).first();
+    private referredToField(): Locator {
+        return this.page
+            .locator('#referral ~ .selectize-control')
+            .or(this.page.getByRole('textbox', { name: /select a department/i }))
+            .first();
+    }
+
+    /**
+     * Refers the patient on, to a department picked at random from whatever this centre
+     * offers. Choosing the department is the whole of this section: the appointment the
+     * recording appears to set alongside it is the Review After date, which lives in its
+     * own fieldset, is required on every consultation referral or not, and is set by
+     * setReviewDate().
+     *
+     * Selecting a department reveals a comments row (the select's own
+     * onchange="toggleReferredComments()"), so the run's advice line goes in there when
+     * it appears.
+     */
+    async addReferral(consultation?: ConsultationData): Promise<string | null> {
+        const department = this.referredToField();
 
         if (!(await isVisibleWithin(department, 5000))) {
             return null;
@@ -553,22 +580,34 @@ export class PrescriptionFormPage {
             return null;
         }
 
-        const date = await this.pickRandomAppointmentDate();
+        const comments = this.page.locator('#ReferredToComments');
 
-        return date ? `${picked} on ${date}` : picked;
+        if (consultation && (await isVisibleWithin(comments, 3000))) {
+            await comments.fill(consultation.advice).catch(() => undefined);
+        }
+
+        return picked;
     }
 
     /**
-     * The appointment date, out of the jQuery UI calendar the box opens.
+     * Review After — a required, readonly box backed by a jQuery UI calendar, and the
+     * reason a save can die in silence: readonly controls are exempt from the browser's
+     * own constraint validation, so an empty one raises no bubble and the app cancels
+     * the submit through a red span of its own instead.
      *
-     * The recording pins this as `getByRole('link', { name: '30' })`, which is the day the
-     * session happened to be recorded on and is not even a valid day in every month. The
-     * calendar renders selectable days as links and everything it will not accept — past
-     * days, days outside the booking window — as plain spans, so the links *are* the
-     * allowed days and one is taken at random from them.
+     * The recording pins the day as `getByRole('link', { name: '30' })`, which is the day
+     * that session happened to be recorded on and is not even a valid day in every month.
+     * The calendar renders every day it will accept as a link inside a cell carrying
+     * data-handler="selectDay", and everything it will not — today and every day before
+     * it — as a plain span, so the links are exactly the future days and one of them is
+     * taken at random. A run also walks a month or two forward first where the calendar
+     * allows it, so the date picked is not always inside the current month.
      */
-    private async pickRandomAppointmentDate(): Promise<string | null> {
-        const dateBox = this.page.getByRole('textbox', { name: /select a date/i }).first();
+    async setReviewDate(): Promise<string | null> {
+        const dateBox = this.page
+            .locator('#ReviewAfterDatePicker')
+            .or(this.page.getByRole('textbox', { name: /select a date/i }))
+            .first();
 
         if (!(await isVisibleWithin(dateBox, 5000))) {
             return null;
@@ -577,7 +616,27 @@ export class PrescriptionFormPage {
         await dateBox.click();
 
         const calendar = this.page.locator('#ui-datepicker-div, .ui-datepicker').first();
-        const days = calendar.locator('a.ui-state-default');
+
+        if (!(await isVisibleWithin(calendar, 5000))) {
+            return null;
+        }
+
+        // Enabled days only: a cell the calendar will act on, never one it has marked
+        // unselectable. Past days are spans and so are excluded by the link anyway.
+        const days = calendar.locator(
+            'td[data-handler="selectDay"]:not(.ui-datepicker-unselectable) a'
+        );
+
+        for (let step = randomInt(0, 2); step > 0; step -= 1) {
+            const next = calendar.locator('a.ui-datepicker-next:not(.ui-state-disabled)');
+
+            if (!(await next.isVisible().catch(() => false))) {
+                break;
+            }
+
+            await next.click();
+            await isVisibleWithin(days.first(), 3000);
+        }
 
         if (!(await isVisibleWithin(days.first(), 5000))) {
             await this.page.keyboard.press('Escape').catch(() => undefined);
@@ -595,6 +654,13 @@ export class PrescriptionFormPage {
 
         const chosen = pickRandom(selectable);
         await days.nth(chosen.index).click();
+
+        // The box is readonly and filled by the calendar, so what it now holds is the
+        // date the form will actually submit - report that rather than the day number.
+        await expect(
+            dateBox,
+            'The review calendar was clicked but no date was written into Review After'
+        ).not.toHaveValue('', { timeout: 5000 });
 
         return (await dateBox.inputValue().catch(() => '')) || chosen.text;
     }
@@ -668,9 +734,14 @@ export class PrescriptionFormPage {
                     return `${invalid.name || invalid.id || invalid.tagName} is invalid: ${invalid.validationMessage}`;
                 }
 
+                // .validateSpanClass is the form's own way of refusing a submit - the
+                // red span next to Review After is one - and it is the only thing said
+                // when the offending control is readonly, which exempts it from the
+                // browser's constraint validation above.
                 const shown = Array.from(
                     document.querySelectorAll<HTMLElement>(
-                        '[role="alert"], .error, .alert, .validation-summary-errors, .field-validation-error'
+                        '[role="alert"], .error, .alert, .validation-summary-errors, ' +
+                            '.field-validation-error, .validateSpanClass'
                     )
                 ).find((element) => element.offsetParent !== null && element.innerText.trim());
 

@@ -28,8 +28,6 @@ export type ConsultationData = {
     diagnosticTestCount: number;
     /** Whether it also adds an over-the-counter medicine. */
     includeOtc: boolean;
-    /** Whether it refers the patient on to another department. */
-    includeReferral: boolean;
     /** Free text for the provisional diagnosis box when it takes typed input. */
     provisionalDiagnosis: string;
     /** Fallbacks for the dosage columns, used only where the column is not a picklist. */
@@ -37,7 +35,7 @@ export type ConsultationData = {
     frequency: string;
     duration: string;
     instruction: string;
-    /** Advice / remarks, where the form has such a box. */
+    /** Advice / remarks, where the form has such a box - the referral comments row. */
     advice: string;
 };
 
@@ -80,7 +78,6 @@ export function createConsultation(): ConsultationData {
         medicineCount: randomInt(1, 3),
         diagnosticTestCount: randomInt(1, 3),
         includeOtc: Math.random() < 0.5,
-        includeReferral: Math.random() < 0.5,
         // The stamp keeps a run's own diagnosis identifiable in the record afterwards,
         // and stops a free-text selectize from offering back the previous run's entry as
         // an existing option.

@@ -54,7 +54,9 @@ test.use({
  *
  * How much of the form gets filled is random too (see tests/data/consultations.ts): one
  * to three medicines, one to three symptoms, one to three diagnostic tests, and the OTC
- * line and the referral each on a coin flip.
+ * line on a coin flip. The Referred To department and the Review After date are written
+ * every run - Review After is required on every consultation, and an empty one is a
+ * readonly box the browser will not complain about, so the save dies without a word.
  *
  * The one thing it needs is a patient in the queue. Prescriptions reach a doctor by being
  * handed over on Doctor Selection, which tests/patient/full-consultation.spec.ts does end
@@ -189,6 +191,9 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
         }
         if (summary.referral) {
             test.info().annotations.push({ type: 'referral', description: summary.referral });
+        }
+        if (summary.reviewDate) {
+            test.info().annotations.push({ type: 'review after', description: summary.reviewDate });
         }
 
         // 6. Save. The button is the form's submit, so a save that worked leaves the page;
