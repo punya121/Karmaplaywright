@@ -124,8 +124,11 @@ export class DoctorSelectionPage {
         await expect(
             this.page.locator('#assignedId'),
             `${name} did not take the assignment: GetAvailability_of_Doctor answered 0, ` +
-                `so the card was never selected. That doctor has to be checked in (log in ` +
-                `as them, DoctorHome > Check In) before a prescription can be handed over.`
+                `so the card was never selected. A doctor answers 0 for either of two ` +
+                `reasons: they are not checked in (log in as them, DoctorHome > Check In), ` +
+                `or they are still attending someone - a consultation left unfinished in ` +
+                `their queue keeps them busy until it is written and approved, which is ` +
+                `what tests/doctor/doctor-consultation.spec.ts does.`
         ).not.toHaveValue('', { timeout: 15000 });
 
         return name;

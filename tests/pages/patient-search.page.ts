@@ -237,6 +237,33 @@ export class PatientSearchPage {
             }
         }
 
+        // A dropped session looks exactly like an empty search result: the app answers
+        // every page with the login screen, so the grid has no rows on it. That is the
+        // usual reason a patient found moments ago cannot be found again - the account
+        // allows only a handful of concurrent sessions - and it is worth saying rather
+        // than leaving as "no such patient".
+        const loginForm = this.page
+            .getByRole('button', { name: /^\s*Login\s*$/i })
+            .or(this.page.getByPlaceholder('Enter your password'))
+            .first();
+
+        // Waited for rather than read off: the redirect to the login screen is usually
+        // still in flight when the last search comes back empty, and an instant read
+        // catches the page mid-navigation and says no.
+        const bounced = await loginForm
+            .waitFor({ state: 'visible', timeout: 5000 })
+            .then(() => true)
+            .catch(() => false);
+
+        if (bounced) {
+            throw new Error(
+                `The app returned to the login page while looking for ${patient.displayId} ` +
+                    '("' + patient.name + '"), so the session was dropped rather than the ' +
+                    'patient missing. The account allows only a few concurrent sessions: ' +
+                    'let the older ones expire, or run fewer at once.'
+            );
+        }
+
         throw new Error(
             `Patient Search lists no row for ${patient.displayId} ("${patient.name}")`
         );

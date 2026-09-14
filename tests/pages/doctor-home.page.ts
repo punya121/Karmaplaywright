@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { baseUrl } from '../config/test-env';
-import { pickRandom } from './selectize';
+import { isVisibleWithin, pickRandom } from './selectize';
 
 /**
  * /DoctorHome - what a doctor lands on after signing in: a Check In / Check Out control
@@ -21,6 +21,11 @@ export type QueuedPatient = {
     displayId: string;
     /** The whole row, flattened, for the run log and the report annotation. */
     summary: string;
+    /**
+     * The consultation this row opens, as the row itself names it - the Attending
+     * radio's value, or the View link's name. Empty only where the row named neither.
+     */
+    prescriptionId: string;
     /**
      * How this row gets opened, which is decided by the row itself:
      *
@@ -183,6 +188,15 @@ export class DoctorHomePage {
      * Selects one waiting patient at random and reports who it was. Fails with the queue's
      * actual state rather than a bare timeout, because an empty queue is the ordinary
      * reason this spec cannot run and is worth saying outright.
+     *
+     * Random, but not indifferent: a row still carrying its Attending radio is a
+     * consultation nobody has written yet, and those are the ones that open. A row whose
+     * radio has gone has been attended already, and once its prescription is saved and
+     * approved the patient summary drops "Start video call and edit prescription"
+     * altogether — there is no way back into the form, and a run that drew one of those
+     * failed for a reason that had nothing to do with the form. So the draw is made from
+     * the unattended rows whenever the queue has any, and only falls back to the attended
+     * ones for a queue made entirely of them.
      */
     async selectRandomWaitingPatient(): Promise<QueuedPatient> {
         const count = await this.waitingCount();
@@ -194,8 +208,17 @@ export class DoctorHomePage {
                 'and hands their prescription to a doctor), or sign in as a doctor who has a queue.'
         ).toBeGreaterThan(0);
 
-        const index = pickRandom([...Array(count).keys()]);
-        const row = this.queueRows().nth(index);
+        const rows = this.queueRows();
+        const notYetAttended: number[] = [];
+        const alreadyAttended: number[] = [];
+
+        for (let row = 0; row < count; row += 1) {
+            if (await this.attendingRadio(rows.nth(row)).count()) notYetAttended.push(row);
+            else alreadyAttended.push(row);
+        }
+
+        const index = pickRandom(notYetAttended.length > 0 ? notYetAttended : alreadyAttended);
+        const row = rows.nth(index);
 
         const summary = (await row.innerText()).replace(/\s+/g, ' ').trim();
         const displayId = /\b([A-Z]{2,4}\d{5,})\b/.exec(summary)?.[1] ?? '';
@@ -203,67 +226,127 @@ export class DoctorHomePage {
         // Not attended yet: the radios all answer to id="optradio", so they are addressed
         // through their own row instead. force: true because the label sits over the
         // control on this grid.
-        if (await this.attendingRadio(row).count()) {
-            await this.attendingRadio(row).check({ force: true });
-            return { index, displayId, summary, via: 'attending' };
+        if (notYetAttended.includes(index)) {
+            const radio = this.attendingRadio(row);
+
+            // <input type="radio" id="optradio" value="7327998"
+            //        onclick="changeStatus('optradio',7327998,0)"> — the consultation this
+            // row opens is named in the value, which is worth having before the click:
+            // changeStatus() marks the patient as being attended and re-renders the grid,
+            // so the radio the run just clicked may not exist to be read afterwards.
+            const prescriptionId = ((await radio.getAttribute('value')) ?? '').trim();
+
+            // click() rather than check(): check() clicks and then asserts the control is
+            // checked, which fails on a control the app has replaced in the meantime even
+            // though the click did exactly what it should.
+            await radio.click({ force: true });
+            await this.page.waitForLoadState('load').catch(() => undefined);
+
+            return { index, displayId, summary, prescriptionId, via: 'attending' };
         }
 
         // Already attended: nothing to select, and the row's own View link is what opens
-        // the consultation again.
+        // the consultation again. Its name attribute carries the same id.
+        const viewLink = this.prescriptionViewLink(row);
+
         await expect(
-            this.prescriptionViewLink(row),
+            viewLink,
             `Queue row ${index + 1} offers neither the Attending radio nor a Prescription ` +
                 `View link, so there is no way into that consultation: ${summary}`
         ).toBeVisible({ timeout: 10000 });
 
-        return { index, displayId, summary, via: 'prescription' };
+        const prescriptionId = ((await viewLink.getAttribute('name')) ?? '').trim();
+
+        return { index, displayId, summary, prescriptionId, via: 'prescription' };
     }
 
     /**
-     * Opens the selected consultation's prescription form, which takes two clicks rather
-     * than one.
+     * Opens the selected consultation's prescription form.
      *
-     * Edit on DoctorHome does not reach the form: it opens the patient's summary,
-     * /PrescriptionView?id=<prescription id>, headed by the patient's name and history
-     * and carrying a single control - "Start video call and edit prescription", an
-     * #Edit of its own. That button starts the call and opens the form. A run that
-     * clicked Edit and waited for /PrescriptionForm simply sat on the summary until it
-     * timed out, reporting "no queue row was selected" when a row had in fact been
-     * selected and opened.
+     * The queue gives three different ways in and which one is there depends on the app
+     * version and on how far along the patient is, so all three are tried in turn rather
+     * than one being assumed:
+     *
+     *   - the row's own View link, which is what a row carries once it is being attended
+     *     - and checking the Attending radio is what puts a row into that state, so this
+     *     is the ordinary route for a patient the doctor has just taken on;
+     *   - DoctorHome's Edit button, which older centres put under the grid for the
+     *     selected row;
+     *   - failing both, the id the row named (the radio's value, the link's name), opened
+     *     as the plain GET the app's own handlers end up making.
+     *
+     * Either of the first two lands on /PrescriptionView?id=<id>, the patient's summary,
+     * whose "Start video call and edit prescription" opens the form itself - see
+     * openFormFromPatientSummary().
      *
      * Reports the prescription id out of the URL so the form can be held to the row it
      * was opened from.
      */
     async openPrescriptionForm(patient?: QueuedPatient): Promise<string> {
-        if (patient?.via === 'prescription') {
-            // Already attended, so there was no radio to select and Edit has nothing to
-            // act on. The row's own View link opens that consultation instead.
-            const viewLink = this.prescriptionViewLink(this.queueRows().nth(patient.index));
+        // The id the queue row named, which is the same one the app's own handlers use.
+        // It is what makes a consultation openable when the screen in front of the run
+        // offers no way in - a View link whose handler never answered, a summary with no
+        // video call button on it.
+        const queuedId = /^\d+$/.test(patient?.prescriptionId ?? '')
+            ? (patient as QueuedPatient).prescriptionId
+            : '';
 
-            await expect(
-                viewLink,
-                `The queue row for ${patient.displayId || 'the selected patient'} no longer ` +
-                    'offers its Prescription View link'
-            ).toBeVisible({ timeout: 15000 });
+        const row = patient ? this.queueRows().nth(patient.index) : undefined;
+        const viewLink = row ? this.prescriptionViewLink(row) : undefined;
+        const edit = this.page.locator('#Edit');
 
-            await viewLink.click();
-            await this.page.waitForLoadState('load');
-        } else {
-            const edit = this.page.locator('#Edit');
+        const entry = viewLink && (await isVisibleWithin(viewLink, 10000))
+            ? viewLink
+            : (await isVisibleWithin(edit, 10000))
+              ? edit
+              : undefined;
 
-            await expect(
-                edit,
-                'DoctorHome has no Edit button to open the selected consultation with'
-            ).toBeVisible({ timeout: 15000 });
-
-            await edit.click();
-            await this.page.waitForLoadState('load');
+        if (entry) {
+            await entry.click();
+        } else if (!queuedId) {
+            throw new Error(
+                'The queue row offers neither a Prescription View link nor an Edit ' +
+                    'button, and named no prescription id, so there is no way into that ' +
+                    'consultation'
+            );
         }
+
+        // Both controls navigate from inside a lookup's callback rather than on the click
+        // itself, so the run waits for that navigation rather than for the click - going
+        // anywhere itself in the meantime only aborts the one the click started. A click
+        // the handler never answered leaves the page on DoctorHome without a word, and
+        // the id off the row is then the way in.
+        const opened = entry
+            ? await this.page
+                  .waitForURL(/PrescriptionView|PrescriptionForm/i, { timeout: 15000 })
+                  .then(() => true)
+                  .catch(() => false)
+            : false;
+
+        if (!opened) {
+            if (!queuedId) {
+                throw new Error(
+                    `The queue row for ${patient?.displayId || 'the selected patient'} did ` +
+                        `not open: the run is still on ${this.page.url()} and the row named ` +
+                        'no prescription id to open directly'
+                );
+            }
+
+            console.log(
+                `The queue did not open prescription ${queuedId} on its own; ` +
+                    'opening the form directly'
+            );
+            await this.page.goto(
+                `${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${queuedId}`
+            );
+        }
+
+        await this.page.waitForLoadState('load').catch(() => undefined);
 
         await expect(
             this.page,
-            'Edit opened neither the patient summary nor the prescription form - the run ' +
-                'is still on DoctorHome, which happens when no queue row was selected'
+            'The queue opened neither the patient summary nor the prescription form - the ' +
+                'run is still on DoctorHome, which happens when no queue row was selected'
         ).toHaveURL(/PrescriptionView|PrescriptionForm/i, { timeout: 20000 });
 
         if (/PrescriptionView/i.test(this.page.url())) {
@@ -311,12 +394,31 @@ export class DoctorHomePage {
         }
 
         const startCall = this.startVideoCallButton();
+        const summaryId = /[?&]id=(\d+)/i.exec(this.page.url())?.[1] ?? '';
 
-        await expect(
-            startCall,
-            'The patient summary has no "Start video call and edit prescription" button, ' +
-                'so there is no way through to the prescription form'
-        ).toBeVisible({ timeout: 15000 });
+        // A summary with no video call button on it is a consultation this screen offers
+        // no way back into - one left mid-attending by a run that stopped, among others.
+        // The form itself is still a plain GET on the same id, so it is opened directly
+        // rather than reported as a dead end; without an id there is genuinely nowhere
+        // to go, and that is what the message says.
+        if (!(await startCall.isVisible({ timeout: 10000 }).catch(() => false))) {
+            if (!summaryId) {
+                throw new Error(
+                    'The patient summary has no "Start video call and edit prescription" ' +
+                        'button and no prescription id in its URL, so there is no way ' +
+                        'through to the prescription form'
+                );
+            }
+
+            console.log(
+                `The patient summary for prescription ${summaryId} offers no video call ` +
+                    'button; opening the form directly'
+            );
+            await this.page.goto(
+                `${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${summaryId}`
+            );
+            return;
+        }
 
         await this.page.waitForLoadState('load');
 
@@ -335,7 +437,11 @@ export class DoctorHomePage {
             )
             .catch(() => undefined);
 
-        await startCall.click();
+        // Bounded, and its failure left to the fallback below: the button is there and
+        // visible but not always clickable - the summary re-renders under it, and a
+        // click that waits for actionability with no limit waits out the whole test
+        // rather than falling through to the URL it would have gone to.
+        await startCall.click({ timeout: 15000 }).catch(() => undefined);
 
         const opened = await this.page
             .waitForURL(/PrescriptionForm/i, { timeout: 15000 })

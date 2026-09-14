@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import type { ConsultationData } from '../data/consultations';
+import { moduleCase } from '../support/module-case';
 import {
     isVisibleWithin,
     pickOrType,
@@ -119,19 +120,37 @@ export class PrescriptionFormPage {
      * Fills the whole form and reports what it put in it. Sections the environment does
      * not render — a centre with no referral departments, a form with no OTC row — are
      * skipped rather than failed, so the same spec runs everywhere.
+     *
+     * Each section runs as its own module case, so the report has a row per section of
+     * the form — medicines, diagnostics, referral, review — instead of one row saying
+     * only that the form was filled. See tests/support/module-case.ts.
      */
     async fill(consultation: ConsultationData, prescriptionId = ''): Promise<ConsultationSummary> {
-        const provisionalDiagnosis = await this.setProvisionalDiagnosis(consultation);
-        const symptoms = await this.addSymptoms(consultation.symptomCount);
-        const medicines = await this.addMedicines(consultation);
-        const otcMedicine = consultation.includeOtc ? await this.addOtcMedicine() : null;
-        const diagnosticTests = await this.addDiagnosticTests(consultation.diagnosticTestCount);
-        const referral = await this.addReferral(consultation);
+        const form = 'Prescription Form';
 
-        // Review After is the form's own required field - a red asterisk on the Review
-        // fieldset, and the app refuses the submit without it - so it is set on every
+        const provisionalDiagnosis = await moduleCase(form, 'Record the provisional diagnosis', () =>
+            this.setProvisionalDiagnosis(consultation)
+        );
+        const symptoms = await moduleCase(form, 'Add the symptoms', () =>
+            this.addSymptoms(consultation.symptomCount)
+        );
+        const medicines = await moduleCase(form, 'Prescribe the medicines', () =>
+            this.addMedicines(consultation)
+        );
+        const otcMedicine = await moduleCase(form, 'Add an over-the-counter item', async () =>
+            consultation.includeOtc ? await this.addOtcMedicine() : null
+        );
+        const diagnosticTests = await moduleCase(form, 'Order the diagnostic tests', () =>
+            this.addDiagnosticTests(consultation.diagnosticTestCount)
+        );
+        const referral = await moduleCase(form, 'Refer the patient on', () =>
+            this.addReferral(consultation)
+        );
+
+        // Review After is the form's own required field — a red asterisk on the Review
+        // fieldset, and the app refuses the submit without it — so it is set on every
         // run, not only on the ones that also refer the patient on.
-        const reviewDate = await this.setReviewDate();
+        const reviewDate = await moduleCase(form, 'Set the review date', () => this.setReviewDate());
 
         // A blank symptom row anywhere on the grid fails the whole submit, so the form is
         // swept before it is handed back to be saved - a row this run could not fill, or

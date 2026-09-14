@@ -1,9 +1,13 @@
 import { expect, test } from '@playwright/test';
 import { doctorPassword, doctorUsername } from '../config/test-env';
 import { createConsultation } from '../data/consultations';
-import { DoctorHomePage } from '../pages/doctor-home.page';
+import { DoctorHomePage, type QueuedPatient } from '../pages/doctor-home.page';
 import { LoginPage } from '../pages/login.page';
-import { PrescriptionFormPage } from '../pages/prescription-form.page';
+import {
+    PrescriptionFormPage,
+    type ConsultationSummary,
+} from '../pages/prescription-form.page';
+import { runModuleCases } from '../support/module-case';
 
 // Paced to be watchable, the way full-consultation.spec.ts is. Raise it for a slower
 // walkthrough (E2E_SLOW_MO=1500) or drop it to 0 for full speed. Pair with --headed, or
@@ -58,6 +62,12 @@ test.use({
  * every run - Review After is required on every consultation, and an empty one is a
  * readonly box the browser will not complain about, so the save dies without a word.
  *
+ * The consultation is one Playwright test because it has to be - one doctor, one
+ * session, one patient taken off the queue - but it is reported as one test case per
+ * module it goes through: coming on duty, taking the patient, each section of the
+ * prescription form, the save and the approval all get their own row, their own
+ * timing and their own error. See tests/support/module-case.ts.
+ *
  * The one thing it needs is a patient in the queue. Prescriptions reach a doctor by being
  * handed over on Doctor Selection, which tests/patient/full-consultation.spec.ts does end
  * to end — run that first against a fresh environment, or sign in as a doctor who already
@@ -94,129 +104,200 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
         const consultation = createConsultation();
         const dialogMessages = prescriptionForm.captureDialogs();
 
-        // 1. Sign in as the doctor. The recording types Dr.Demo / Sandbox@1234 straight
-        //    into the page; the account lives in .env instead, so the password is not in
-        //    the repo and the spec runs against whichever doctor an environment has.
-        await loginPage.loginExpectingHome(doctorUsername, doctorPassword);
+        // Carried from one module to the next: the queue row decides which patient the
+        // rest of the run is about, and the prescription id read off it is what every
+        // later module is held to.
+        let waiting!: QueuedPatient;
+        let prescriptionId = '';
+        let summary!: ConsultationSummary;
 
-        // 2. Come on duty. A doctor who is checked out is not offered any consultation,
-        //    and the app says nothing about why — so this is done explicitly rather than
-        //    left to whatever state the previous run happened to leave behind.
-        await doctorHome.open();
-        const cameOnDuty = await doctorHome.ensureCheckedIn();
-        cameOnDutyThisRun = cameOnDuty;
-        test.info().annotations.push({
-            type: 'doctor',
-            description: `${doctorUsername}, ${cameOnDuty ? 'checked in by this run' : 'already on duty'}`,
-        });
+        await runModuleCases([
+            {
+                module: 'Login',
+                title: 'Sign in as the doctor',
+                // The recording types Dr.Demo / Sandbox@1234 straight into the page; the
+                // account lives in .env instead, so the password is not in the repo and
+                // the spec runs against whichever doctor an environment has.
+                run: () => loginPage.loginExpectingHome(doctorUsername, doctorPassword),
+            },
+            {
+                module: 'Doctor Home',
+                title: 'Come on duty with Check In',
+                // A doctor who is checked out is not offered any consultation, and the
+                // app says nothing about why — so this is done explicitly rather than
+                // left to whatever state the previous run happened to leave behind.
+                run: async () => {
+                    await doctorHome.open();
+                    const cameOnDuty = await doctorHome.ensureCheckedIn();
+                    cameOnDutyThisRun = cameOnDuty;
+                    test.info().annotations.push({
+                        type: 'doctor',
+                        description: `${doctorUsername}, ${
+                            cameOnDuty ? 'checked in by this run' : 'already on duty'
+                        }`,
+                    });
+                },
+            },
+            {
+                module: 'Doctor Home',
+                title: 'Take a waiting patient off the queue',
+                // Which patient is deliberately random: `#optradio` in the recording is
+                // the id *every* row's radio carries, so it only ever meant "whoever is
+                // first", and two runs against one centre would collide on them.
+                run: async () => {
+                    waiting = await doctorHome.selectRandomWaitingPatient();
+                    test.info().annotations.push({
+                        type: 'patient',
+                        description:
+                            `queue row ${waiting.index + 1}${
+                                waiting.displayId ? ` — ${waiting.displayId}` : ''
+                            }: ${waiting.summary} (opened by ${
+                                waiting.via === 'attending'
+                                    ? 'the Attending radio'
+                                    : 'the Prescription View link, already attended'
+                            })`,
+                    });
+                    console.log(
+                        `Opening consultation for queue row ${waiting.index + 1}: ${waiting.summary}`
+                    );
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Open the consultation for that patient',
+                // The form is held to the id the queue row opened — the queue is the
+                // doctor's whole list, so landing on the right screen for the wrong
+                // patient is the failure worth catching.
+                run: async () => {
+                    prescriptionId = await doctorHome.openPrescriptionForm(waiting);
+                    await prescriptionForm.expectLoaded(prescriptionId);
+                    await prescriptionForm.startVideoCallIfRequested();
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Write the consultation',
+                // Every value in it comes out of the page. fill() opens a module case per
+                // section of the form — diagnosis, symptoms, medicines, OTC, diagnostics,
+                // referral, review — and those finer cases are what the report shows, so a
+                // run says which section of the form broke rather than just "the form".
+                // This stage is their container, nothing more.
+                run: async () => {
+                    summary = await prescriptionForm.fill(consultation, prescriptionId);
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Check what was written',
+                run: async () => {
+                    expect(
+                        summary.medicines.length,
+                        'The prescription was saved with no medicine on it'
+                    ).toBeGreaterThan(0);
 
-        // 3. Take a patient off the queue. Which one is deliberately random: `#optradio`
-        //    in the recording is the id *every* row's radio carries, so it only ever meant
-        //    "whoever is first", and two runs against one centre would collide on them.
-        const waiting = await doctorHome.selectRandomWaitingPatient();
-        test.info().annotations.push({
-            type: 'patient',
-            description:
-                `queue row ${waiting.index + 1}${waiting.displayId ? ` — ${waiting.displayId}` : ''}: ` +
-                `${waiting.summary} (opened by ${
-                    waiting.via === 'attending'
-                        ? 'the Attending radio'
-                        : 'the Prescription View link, already attended'
-                })`,
-        });
-        console.log(`Opening consultation for queue row ${waiting.index + 1}: ${waiting.summary}`);
+                    for (const line of summary.medicines) {
+                        expect(line.category, 'A prescription line has no category').not.toBe('');
+                        expect(line.medicine, 'A prescription line has no medicine').not.toBe('');
+                    }
 
-        // 4. Open their prescription form, and hold the form to the id the queue row
-        //    opened — the queue is the doctor's whole list, so landing on the right screen
-        //    for the wrong patient is the failure worth catching.
-        const prescriptionId = await doctorHome.openPrescriptionForm(waiting);
-        await prescriptionForm.expectLoaded(prescriptionId);
-        await prescriptionForm.startVideoCallIfRequested();
+                    // Distinct picks, not the same medicine three times over — the point of
+                    // drawing at random is that the run covers different rows of the
+                    // catalogue each time.
+                    const prescribed = summary.medicines.map((line) => line.medicine);
+                    expect(
+                        new Set(prescribed).size,
+                        `The same medicine was prescribed twice: ${prescribed.join(', ')}`
+                    ).toBe(prescribed.length);
 
-        // 5. Write the consultation. Every value in it comes out of the page.
-        const summary = await prescriptionForm.fill(consultation, prescriptionId);
+                    const written = summary.medicines
+                        .map(
+                            (line) =>
+                                `${line.medicine} (${line.category})` +
+                                `${line.dosage ? ` ${line.dosage}` : ''}` +
+                                `${line.frequency ? ` ${line.frequency}` : ''}` +
+                                `${line.duration ? ` for ${line.duration}` : ''}` +
+                                `${line.instruction ? `, ${line.instruction}` : ''}` +
+                                `${line.route ? `, ${line.route}` : ''}`
+                        )
+                        .join(' | ');
 
-        expect(
-            summary.medicines.length,
-            'The prescription was saved with no medicine on it'
-        ).toBeGreaterThan(0);
+                    test.info().annotations.push({ type: 'prescription', description: written });
+                    console.log(`Prescription ${prescriptionId}: ${written}`);
 
-        for (const line of summary.medicines) {
-            expect(line.category, 'A prescription line has no category').not.toBe('');
-            expect(line.medicine, 'A prescription line has no medicine').not.toBe('');
-        }
+                    if (summary.provisionalDiagnosis) {
+                        test.info().annotations.push({
+                            type: 'provisional diagnosis',
+                            description: summary.provisionalDiagnosis,
+                        });
+                    }
+                    if (summary.symptoms.length > 0) {
+                        test.info().annotations.push({
+                            type: 'symptoms',
+                            description: summary.symptoms.join('; '),
+                        });
+                    }
+                    if (summary.diagnosticTests.length > 0) {
+                        test.info().annotations.push({
+                            type: 'diagnostic tests',
+                            description: summary.diagnosticTests.join('; '),
+                        });
+                    }
+                    if (summary.otcMedicine) {
+                        test.info().annotations.push({
+                            type: 'OTC',
+                            description: summary.otcMedicine,
+                        });
+                    }
+                    if (summary.referral) {
+                        test.info().annotations.push({
+                            type: 'referral',
+                            description: summary.referral,
+                        });
+                    }
+                    if (summary.reviewDate) {
+                        test.info().annotations.push({
+                            type: 'review after',
+                            description: summary.reviewDate,
+                        });
+                    }
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Save the prescription',
+                // The button is the form's submit, so a save that worked leaves the page;
+                // one that did not reports the app's own reason instead of being clicked
+                // again.
+                run: async () => {
+                    await prescriptionForm.saveAndExpectLeavingForm(dialogMessages);
+                    console.log(
+                        `Saved prescription ${prescriptionId} — the run is now on ${page.url()}`
+                    );
+                },
+            },
+            {
+                module: 'Doctor Approval',
+                title: 'Approve the saved prescription',
+                // The save comes back to the patient's summary, where the written
+                // consultation waits on the doctor's own approval — until that is given
+                // the queue row stays "Pending Doctor Approval" and the consultation is
+                // not done.
+                run: async () => {
+                    const approved = await prescriptionForm.approveIfOffered();
 
-        // Distinct picks, not the same medicine three times over — the point of drawing
-        // at random is that the run covers different rows of the catalogue each time.
-        const prescribed = summary.medicines.map((line) => line.medicine);
-        expect(new Set(prescribed).size, `The same medicine was prescribed twice: ${prescribed.join(', ')}`).toBe(
-            prescribed.length
-        );
-
-        const written = summary.medicines
-            .map(
-                (line) =>
-                    `${line.medicine} (${line.category})` +
-                    `${line.dosage ? ` ${line.dosage}` : ''}` +
-                    `${line.frequency ? ` ${line.frequency}` : ''}` +
-                    `${line.duration ? ` for ${line.duration}` : ''}` +
-                    `${line.instruction ? `, ${line.instruction}` : ''}` +
-                    `${line.route ? `, ${line.route}` : ''}`
-            )
-            .join(' | ');
-
-        test.info().annotations.push({ type: 'prescription', description: written });
-        console.log(`Prescription ${prescriptionId}: ${written}`);
-
-        if (summary.provisionalDiagnosis) {
-            test.info().annotations.push({
-                type: 'provisional diagnosis',
-                description: summary.provisionalDiagnosis,
-            });
-        }
-        if (summary.symptoms.length > 0) {
-            test.info().annotations.push({
-                type: 'symptoms',
-                description: summary.symptoms.join('; '),
-            });
-        }
-        if (summary.diagnosticTests.length > 0) {
-            test.info().annotations.push({
-                type: 'diagnostic tests',
-                description: summary.diagnosticTests.join('; '),
-            });
-        }
-        if (summary.otcMedicine) {
-            test.info().annotations.push({ type: 'OTC', description: summary.otcMedicine });
-        }
-        if (summary.referral) {
-            test.info().annotations.push({ type: 'referral', description: summary.referral });
-        }
-        if (summary.reviewDate) {
-            test.info().annotations.push({ type: 'review after', description: summary.reviewDate });
-        }
-
-        // 6. Save. The button is the form's submit, so a save that worked leaves the page;
-        //    one that did not reports the app's own reason instead of being clicked again.
-        await prescriptionForm.saveAndExpectLeavingForm(dialogMessages);
-
-        console.log(`Saved prescription ${prescriptionId} — the run is now on ${page.url()}`);
-
-        // 7. Approve it. The save comes back to the patient's summary, where the written
-        //    consultation waits on the doctor's own approval — until that is given the
-        //    queue row stays "Pending Doctor Approval" and the consultation is not done.
-        const approved = await prescriptionForm.approveIfOffered();
-
-        test.info().annotations.push({
-            type: 'approval',
-            description: approved
-                ? 'approved on the patient summary after saving'
-                : 'no Approve button was offered, so nothing was left to approve',
-        });
-        console.log(
-            approved
-                ? `Approved prescription ${prescriptionId}`
-                : `Prescription ${prescriptionId} offered no Approve button`
-        );
+                    test.info().annotations.push({
+                        type: 'approval',
+                        description: approved
+                            ? 'approved on the patient summary after saving'
+                            : 'no Approve button was offered, so nothing was left to approve',
+                    });
+                    console.log(
+                        approved
+                            ? `Approved prescription ${prescriptionId}`
+                            : `Prescription ${prescriptionId} offered no Approve button`
+                    );
+                },
+            },
+        ]);
     });
 });

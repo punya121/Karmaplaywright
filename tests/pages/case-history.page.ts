@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { PatientCaseHistoryData } from '../data/patients';
+import { moduleCase } from '../support/module-case';
 
 /**
  * E2E_HOLD_OPEN=1 (with --headed) parks the run at page.pause() the moment Save's popup
@@ -459,11 +460,15 @@ export class CaseHistoryPage {
         return answered;
     }
 
-    async fill(caseHistory: PatientCaseHistoryData): Promise<CaseHistorySummary> {
+    /**
+     * The attendance line at the top of the form: who assisted and how the patient got
+     * here. Taken from whoever/whatever the app actually offers instead of a pinned
+     * name, so the run is not tied to one staff member or vehicle. `--` skips the
+     * placeholder row.
+     */
+    async recordAttendance(): Promise<{ nursingStaff: string; transportMode: string }> {
         const page = this.page;
 
-        // Take whoever/whatever the app actually offers instead of a pinned name, so the
-        // run is not tied to one staff member or vehicle. `--` skips the placeholder row.
         const nursingStaff = await this.selectRandomOption(
             '--Select a Nursing Staff--',
             /^(?!--)\S/
@@ -480,6 +485,17 @@ export class CaseHistoryPage {
             page.getByRole('row').filter({ hasText: 'Transport Mode' }).last()
         ).toContainText(transportMode, { useInnerText: true });
 
+        return { nursingStaff, transportMode };
+    }
+
+    /**
+     * The vitals block, plus the allergies answer that sits with it. Allergies is
+     * required (its label carries a *); leaving the radio unset makes the form fail
+     * validation on Save.
+     */
+    async recordVitals(caseHistory: PatientCaseHistoryData): Promise<void> {
+        const page = this.page;
+
         await page.locator('#weight').fill(caseHistory.weight);
         await page.locator('#height').fill(caseHistory.height);
         await page.locator('#high_bp').fill(caseHistory.highBp);
@@ -489,9 +505,8 @@ export class CaseHistoryPage {
         await page.locator('#respiratory_rate').fill(caseHistory.respiratoryRate);
         await page.locator('input[name="spo2"]').fill(caseHistory.spo2);
 
-        // Allergies is required (its label carries a *); leaving the radio unset makes
-        // the form fail validation on Save. The radios carry no accessible name, so they
-        // are addressed by position: Known first, Not Known second.
+        // The radios carry no accessible name, so they are addressed by position:
+        // Known first, Not Known second.
         await page
             .getByRole('row')
             .filter({ hasText: 'Allergies : Known Not Known' })
@@ -499,16 +514,42 @@ export class CaseHistoryPage {
             .getByRole('radio')
             .nth(caseHistory.allergies === 'Known' ? 0 : 1)
             .check({ force: true });
+    }
+
+    /**
+     * Fills the whole form and reports what it put in it.
+     *
+     * Each section runs as its own module case, so the report carries a row for the
+     * attendance, the vitals, the under-5 checklist, the symptoms and the point-of-care
+     * tests rather than one row saying only that a case history was filled. See
+     * tests/support/module-case.ts.
+     */
+    async fill(caseHistory: PatientCaseHistoryData): Promise<CaseHistorySummary> {
+        const form = 'Case History';
+
+        const { nursingStaff, transportMode } = await moduleCase(
+            form,
+            'Record who assisted and how the patient arrived',
+            () => this.recordAttendance()
+        );
+
+        await moduleCase(form, 'Record the vitals and allergies', () =>
+            this.recordVitals(caseHistory)
+        );
 
         // Under-fives get an extra screening section that older patients never see, so
         // its absence is the normal case rather than a failure.
-        const underFiveChecklist = await this.fillUnderFiveChecklist();
+        const underFiveChecklist = await moduleCase(
+            form,
+            'Answer the under-5 screening checklist',
+            () => this.fillUnderFiveChecklist()
+        );
 
-        const symptoms = await this.addSymptoms(caseHistory.symptomCount);
-        const tests = await this.addTests(
-            caseHistory.testCount,
-            caseHistory.minTestValue,
-            caseHistory.maxTestValue
+        const symptoms = await moduleCase(form, 'Add the symptoms', () =>
+            this.addSymptoms(caseHistory.symptomCount)
+        );
+        const tests = await moduleCase(form, 'Record the point-of-care tests', () =>
+            this.addTests(caseHistory.testCount, caseHistory.minTestValue, caseHistory.maxTestValue)
         );
 
         return { nursingStaff, transportMode, ...symptoms, tests, underFiveChecklist };
@@ -523,7 +564,7 @@ export class CaseHistoryPage {
             .filter({ has: this.page.getByRole('img') });
     }
 
-    private async addSymptoms(count: number): Promise<{ symptoms: string[]; durations: string[] }> {
+    async addSymptoms(count: number): Promise<{ symptoms: string[]; durations: string[] }> {
         const page = this.page;
         const symptomRows = this.symptomRows();
         const symptoms: string[] = [];
@@ -600,7 +641,7 @@ export class CaseHistoryPage {
             .filter({ has: this.page.getByRole('checkbox') });
     }
 
-    private async addTests(count: number, min: number, max: number): Promise<string[]> {
+    async addTests(count: number, min: number, max: number): Promise<string[]> {
         const page = this.page;
         const testRows = this.testRows();
         const tests: string[] = [];

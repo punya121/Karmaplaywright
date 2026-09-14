@@ -82,6 +82,59 @@ whole `reports/runs/` folder to start fresh.
 | `excel-writer.ts` | Builds the workbook (styling, filters, freeze panes, data bars). |
 | `module-map.ts` | The only file you may ever need to edit — folder → module name overrides. |
 | `types.ts` | Shared shapes. |
+| `../tests/support/module-case.ts` | `runModuleCases()` / `moduleCase()` — how a journey spec reports one row per module. |
+
+## One row per module, inside a long journey
+
+A journey spec — `tests/patient/full-consultation.spec.ts`, `tests/doctor/doctor-consultation.spec.ts` —
+has to be a single Playwright test: one session, one patient, in order. Reported as
+a single test it said almost nothing, because "Full consultation: failed" names
+neither how far the run got nor which screen broke.
+
+So each stage of a journey runs as a **module case**, and the reporter gives every
+one of them its own row:
+
+| Module | Test Case | Status | Duration |
+| --- | --- | --- | --- |
+| Patient Registration | Register a new patient and save | Passed | 3.7 sec |
+| Consent Form | Assign a consent form to that patient | Passed | 1.5 sec |
+| Case History | Record the vitals and allergies | Failed | 4.8 sec |
+| Doctor Selection | Hand the visit to a doctor | Not Executed | |
+
+The Summary sheet then gives a pass rate per module, and the Test Details sheet
+carries a **Scenario** column saying which journey each row came out of.
+
+Writing one is `runModuleCases()` from `tests/support/module-case.ts`:
+
+```ts
+await runModuleCases([
+    {
+        module: 'Patient Registration',
+        title: 'Register a new patient and save',
+        run: async () => { /* ... */ },
+    },
+    {
+        module: 'Consent Form',
+        title: 'Assign a consent form to that patient',
+        run: async () => { /* ... */ },
+    },
+]);
+```
+
+Three things follow from how the reporter reads them:
+
+- **Declared up front.** `runModuleCases()` records the whole list before the first
+  stage starts, so the modules a failure stopped from running are reported as
+  **Not Executed** instead of vanishing. The same suite then reports the same set
+  of test cases whether it passed or broke half way.
+- **Innermost wins.** A page object may open module cases of its own —
+  `CaseHistoryPage.fill()` and `PrescriptionFormPage.fill()` both do, with
+  `moduleCase(module, title, body)` — and those finer cases are what get reported,
+  in place of the stage that contains them. Nothing is counted twice.
+- **Nothing else changes.** A test with no module cases in it is one row, exactly
+  as before.
+
+## Module naming
 
 ## Adding a new module
 
@@ -131,6 +184,7 @@ The resolver checks, in order:
 | `timedOut` | Timed Out | Failed |
 | `interrupted` | Interrupted | Failed |
 | `skipped` | Skipped | Skipped |
+| (a module case an earlier failure stopped) | Not Executed | counted with Skipped |
 
 Retries collapse into a single row showing the final attempt; the `Retry` column
 says which attempt that was.

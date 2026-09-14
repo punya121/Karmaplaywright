@@ -8,7 +8,8 @@ import type { ReportPayload, TestRow } from './types';
  *
  * Two sheets:
  *   - Summary       : run totals + module-wise pass rates + a pass/fail/skip breakdown
- *   - Test Details  : one row per test case
+ *   - Test Details  : one row per test case, which for a journey spec means one row
+ *                     per module it went through rather than one for the whole run
  *
  * Nothing in here knows about specific modules — it renders whatever modules the
  * resolver found, so a new test folder shows up on its own.
@@ -57,7 +58,7 @@ function styleStatusCell(cell: ExcelJS.Cell, status: string): void {
     if (normalised === 'passed') {
         cell.fill = fill(COLOURS.passed);
         cell.font = { bold: true, color: { argb: COLOURS.passedText } };
-    } else if (normalised === 'skipped') {
+    } else if (normalised === 'skipped' || normalised === 'not executed') {
         cell.fill = fill(COLOURS.skipped);
         cell.font = { bold: true, color: { argb: COLOURS.skippedText } };
     } else {
@@ -159,7 +160,14 @@ function buildSummarySheet(workbook: ExcelJS.Workbook, payload: ReportPayload): 
 
     const headerRowNumber = moduleHeadingRow + 1;
     const moduleHeader = sheet.getRow(headerRowNumber);
-    moduleHeader.values = ['Module', 'Total', 'Passed', 'Failed', 'Skipped', 'Pass %'];
+    moduleHeader.values = [
+        'Module',
+        'Test Cases',
+        'Passed',
+        'Failed',
+        'Skipped / Not Run',
+        'Pass %',
+    ];
     styleHeaderRow(moduleHeader);
 
     let rowNumber = headerRowNumber;
@@ -295,11 +303,14 @@ function buildDetailsSheet(workbook: ExcelJS.Workbook, tests: TestRow[]): void {
     });
 
     sheet.columns = [
-        { header: 'Module', key: 'module', width: 18 },
-        { header: 'Test Case', key: 'testCase', width: 52 },
+        { header: 'Module', key: 'module', width: 24 },
+        { header: 'Test Case', key: 'testCase', width: 48 },
+        // A journey reports one row per module, so the row has to say which journey
+        // it came out of - on its own "Record the vitals" does not place itself.
+        { header: 'Scenario', key: 'scenario', width: 42 },
         { header: 'Status', key: 'status', width: 14 },
         { header: 'Duration', key: 'duration', width: 14 },
-        { header: 'Test File', key: 'testFile', width: 38 },
+        { header: 'Test File', key: 'testFile', width: 32 },
         { header: 'Error Message', key: 'error', width: 60 },
         { header: 'Execution Time', key: 'startTime', width: 22 },
         { header: 'Retry', key: 'retry', width: 8 },
@@ -312,6 +323,7 @@ function buildDetailsSheet(workbook: ExcelJS.Workbook, tests: TestRow[]): void {
         const row = sheet.addRow({
             module: test.module,
             testCase: test.testCase,
+            scenario: test.scenario,
             status: test.status,
             duration: Number((test.durationMs / 1000).toFixed(1)),
             testFile: test.testFile,
@@ -338,7 +350,7 @@ function buildDetailsSheet(workbook: ExcelJS.Workbook, tests: TestRow[]): void {
 
     sheet.autoFilter = {
         from: { row: 1, column: 1 },
-        to: { row: Math.max(sheet.rowCount, 1), column: 9 },
+        to: { row: Math.max(sheet.rowCount, 1), column: 10 },
     };
 }
 
