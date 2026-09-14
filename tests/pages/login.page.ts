@@ -21,15 +21,32 @@ export class LoginPage {
 
     async expectHome(): Promise<void> {
         const activeSessionMessage = this.page.getByText(/already have \d+ active sessions/i);
-        if (await activeSessionMessage.isVisible({ timeout: 5000 }).catch(() => false)) {
+        // A centre lands on a page with an accessible "Home" link. A doctor lands on
+        // DoctorHome whose nav Home is an image with no name, so the greeting and the
+        // Check In / Check Out control are what show the session took.
+        const signedIn = this.page
+            .getByRole('link', { name: 'Home' })
+            .or(this.page.getByRole('heading', { name: /Hello Dr/i }))
+            .or(this.page.locator('#Checkin'))
+            .or(this.page.getByRole('button', { name: /^\s*Check In\s*$/i }))
+            .or(this.page.locator('#Checkout'))
+            .or(this.page.getByRole('button', { name: /^\s*Check Out\s*$/i }));
+
+        await Promise.race([
+            activeSessionMessage.waitFor({ state: 'visible', timeout: 15000 }),
+            signedIn.first().waitFor({ state: 'visible', timeout: 15000 }),
+        ]).catch(() => undefined);
+
+        if (await activeSessionMessage.isVisible().catch(() => false)) {
             throw new Error(
                 'Login blocked: the account has too many active sessions. Log out another session and retry.',
             );
         }
 
-        await expect(this.page.getByRole('link', { name: 'Home' })).toBeVisible({
-            timeout: 10000,
-        });
+        await expect(
+            signedIn.first(),
+            'Login did not reach a centre or doctor home page'
+        ).toBeVisible({ timeout: 5000 });
     }
 
     async loginExpectingHome(username: string, password: string): Promise<void> {

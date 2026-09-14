@@ -29,15 +29,36 @@ export class DoctorHomePage {
     async open(): Promise<void> {
         await this.page.goto(`${baseUrl.replace(/\/$/, '')}/DoctorHome`);
         await this.page.waitForLoadState('load');
-        await expect(this.page.getByRole('link', { name: 'Home' })).toBeVisible({ timeout: 15000 });
+        await this.expectLoaded();
+    }
+
+    /**
+     * DoctorHome's nav Home is an unnamed image link, so "Home" is not an accessible
+     * name here. The greeting and the Check In / Check Out control are.
+     */
+    async expectLoaded(): Promise<void> {
+        await expect(
+            this.page
+                .getByRole('heading', { name: /Hello Dr/i })
+                .or(this.checkInButton())
+                .or(this.checkOutButton())
+                .first(),
+            'DoctorHome did not load'
+        ).toBeVisible({ timeout: 15000 });
     }
 
     private checkInButton(): Locator {
-        return this.page.getByRole('button', { name: /^\s*Check In\s*$/i }).first();
+        return this.page
+            .locator('#Checkin')
+            .or(this.page.getByRole('button', { name: /^\s*Check In\s*$/i }))
+            .first();
     }
 
     private checkOutButton(): Locator {
-        return this.page.getByRole('button', { name: /^\s*Check Out\s*$/i }).first();
+        return this.page
+            .locator('#Checkout')
+            .or(this.page.getByRole('button', { name: /^\s*Check Out\s*$/i }))
+            .first();
     }
 
     /**

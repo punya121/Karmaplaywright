@@ -83,7 +83,7 @@ export class PrescriptionSearchPage {
             `The row about to be opened does not carry ${patient.displayId}`
         ).toHaveCount(1);
 
-        const doctorLink = row.locator('a[href*="DoctorSelection" i]').first();
+        const doctorLink = this.doctorSelectionLink(row);
         await expect(
             doctorLink,
             `The prescription row for ${patient.displayId} offers no Doctor Selection link`
@@ -95,17 +95,13 @@ export class PrescriptionSearchPage {
         const prescriptionId = /[?&]id=(\d+)/i.exec(href)?.[1] ?? '';
         const landed = new RegExp(`DoctorSelection\\?id=${prescriptionId || '\\d+'}`, 'i');
 
-        // The doctor icon is not always clickable. The server sometimes renders it as
-        // <a style="pointer-events: none"> inside a <div>, so a click falls through to
-        // that div, and the page's Bootstrap 2 modals (#consentFormModal, #BillModel)
-        // are transparent but still sit over the middle columns. Either way Playwright
-        // just scrolls up and down retrying until the test times out. A trial click
-        // tells whether a real click would reach the icon; if not, the icon's own href
-        // is opened, which is the same GET the click would have made.
-        const clickable = await doctorLink
-            .click({ trial: true, timeout: 5000 })
-            .then(() => true)
-            .catch(() => false);
+        // The doctor icon is not always clickable. When no doctor is checked in, the
+        // app renders it as <a style="pointer-events: none">, and a click never reaches
+        // Doctor Selection. The spec must check that doctor in first rather than skip
+        // past the icon. Overlaying Bootstrap 2 modals (#consentFormModal, #BillModel)
+        // can also intercept a click; in that case the icon's own href is opened, which
+        // is the same GET a real click would have made.
+        const clickable = await this.isDoctorLinkClickable(doctorLink);
 
         if (clickable) {
             await Promise.all([
@@ -113,13 +109,16 @@ export class PrescriptionSearchPage {
                 doctorLink.click(),
             ]);
         } else {
-            const disabledByApp = await doctorLink.evaluate(
-                (link) => getComputedStyle(link).pointerEvents === 'none'
-            );
+            const disabledByApp = await this.isDoctorLinkDisabledByApp(doctorLink);
+            expect(
+                disabledByApp,
+                `The doctor icon for ${patient.displayId} is not clickable because no ` +
+                    `doctor is checked in (pointer-events: none). Log in as the doctor, ` +
+                    `press Check In, then come back as the centre to assign them.`
+            ).toBe(false);
+
             console.log(
-                `Doctor icon for ${patient.displayId} is not clickable (${
-                    disabledByApp ? 'the app rendered it with pointer-events: none' : 'covered by another element'
-                }); opening ${href} directly`
+                `Doctor icon for ${patient.displayId} is covered by another element; opening ${href} directly`
             );
             await this.page.goto(href);
             await expect(this.page).toHaveURL(landed, { timeout: 30000 });
@@ -128,6 +127,48 @@ export class PrescriptionSearchPage {
         await this.page.waitForLoadState('load');
 
         return prescriptionId;
+    }
+
+    /**
+     * Whether this patient's doctor icon would take a click. When no doctor is on duty
+     * the app disables the link with pointer-events: none, so the centre cannot assign
+     * anyone until that doctor has checked in.
+     */
+    async isDoctorSelectionClickable(patient: IdentifiedPatient): Promise<boolean> {
+        const row = this.rowsFor(patient).first();
+        await expect(
+            row,
+            `Prescription (Centre) lists no visit for ${patient.displayId}`
+        ).toHaveCount(1, { timeout: 15000 });
+
+        const doctorLink = this.doctorSelectionLink(row);
+        await expect(
+            doctorLink,
+            `The prescription row for ${patient.displayId} offers no Doctor Selection link`
+        ).toBeVisible({ timeout: 15000 });
+
+        return this.isDoctorLinkClickable(doctorLink);
+    }
+
+    async isDoctorSelectionDisabledByApp(patient: IdentifiedPatient): Promise<boolean> {
+        const row = this.rowsFor(patient).first();
+        const doctorLink = this.doctorSelectionLink(row);
+        return this.isDoctorLinkDisabledByApp(doctorLink);
+    }
+
+    private doctorSelectionLink(row: Locator): Locator {
+        return row.locator('a[href*="DoctorSelection" i]').first();
+    }
+
+    private async isDoctorLinkClickable(doctorLink: Locator): Promise<boolean> {
+        return doctorLink
+            .click({ trial: true, timeout: 5000 })
+            .then(() => true)
+            .catch(() => false);
+    }
+
+    private async isDoctorLinkDisabledByApp(doctorLink: Locator): Promise<boolean> {
+        return doctorLink.evaluate((link) => getComputedStyle(link).pointerEvents === 'none');
     }
 
     /**

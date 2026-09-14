@@ -56,7 +56,7 @@ export class DoctorSelectionPage {
         return this.page.locator('#image');
     }
 
-    async expectLoaded(): Promise<void> {
+    async expectLoaded(prescriptionId?: string): Promise<void> {
         await this.page.waitForLoadState('load');
         await expect(
             this.page,

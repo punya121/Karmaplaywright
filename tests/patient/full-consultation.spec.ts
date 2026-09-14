@@ -1,8 +1,14 @@
-import { expect, test } from '@playwright/test';
-import { validPassword, validUsername } from '../config/test-env';
+import { expect, test, type Page } from '@playwright/test';
+import {
+    doctorPassword,
+    doctorUsername,
+    validPassword,
+    validUsername,
+} from '../config/test-env';
 import { createSavePatient } from '../data/patients';
 import { CaseHistoryPage } from '../pages/case-history.page';
 import { ConsentFormPage } from '../pages/consent-form.page';
+import { DoctorHomePage } from '../pages/doctor-home.page';
 import { DoctorSelectionPage } from '../pages/doctor-selection.page';
 import { LoginPage } from '../pages/login.page';
 import { PatientSearchPage, type IdentifiedPatient } from '../pages/patient-search.page';
@@ -38,7 +44,26 @@ test.use({
  *
  * Runs a child instead of an adult with E2E_UNDER_FIVE=1, which is the only way to see
  * the childhood-illness screening checklist.
+ *
+ * If no doctor is checked in, Prescription (Centre) greys out the doctor icon
+ * (pointer-events: none) and the handover cannot start. The run then signs in as the
+ * doctor, presses Check In on DoctorHome, signs back in as the centre, and assigns
+ * from the same prescription row.
  */
+async function checkInDoctorAndReturnAsCentre(page: Page): Promise<boolean> {
+    const loginPage = new LoginPage(page);
+    const doctorHome = new DoctorHomePage(page);
+
+    await loginPage.logout();
+    await loginPage.loginExpectingHome(doctorUsername, doctorPassword);
+    await doctorHome.expectLoaded();
+    const cameOnDuty = await doctorHome.ensureCheckedIn();
+    await loginPage.logout();
+    await loginPage.loginExpectingHome(validUsername, validPassword);
+
+    return cameOnDuty;
+}
+
 test.describe('Full consultation: register, consent, case history, doctor', () => {
     test.describe.configure({ mode: 'serial' });
 
@@ -151,6 +176,29 @@ test.describe('Full consultation: register, consent, case history, doctor', () =
         //    than by position — the grid is the centre's, newest first — and the
         //    prescription id read off it is checked again on the screen that opens, so
         //    the doctor cannot end up with someone else's consultation.
+        //
+        //    A doctor who is not on duty cannot be assigned: the icon on the row is not
+        //    clickable until they have pressed Check In. Switch to that doctor, come on
+        //    duty, then return as the centre and pick them from this same visit.
+        if (!(await prescriptionPage.isDoctorSelectionClickable(registered))) {
+            const disabledByApp = await prescriptionPage.isDoctorSelectionDisabledByApp(
+                registered
+            );
+            console.log(
+                `Doctor icon for ${registered.displayId} is not clickable` +
+                    `${disabledByApp ? ' (no doctor is checked in)' : ''}; ` +
+                    `signing in as ${doctorUsername} to Check In, then returning as the centre`
+            );
+            const cameOnDuty = await checkInDoctorAndReturnAsCentre(page);
+            test.info().annotations.push({
+                type: 'doctor check-in',
+                description: `${doctorUsername} ${
+                    cameOnDuty ? 'checked in by this run' : 'was already on duty'
+                }`,
+            });
+            await prescriptionPage.expectPrescriptionFor(registered);
+        }
+
         const prescriptionId = await prescriptionPage.openDoctorSelectionFor(registered);
         await doctorPage.expectLoaded(prescriptionId);
 
