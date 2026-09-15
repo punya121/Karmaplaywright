@@ -2,16 +2,13 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { PatientCaseHistoryData } from '../data/patients';
 import { moduleCase } from '../support/module-case';
+import { pickRandom, pickRandomOption } from './selectize';
 
 /**
  * E2E_HOLD_OPEN=1 (with --headed) parks the run at page.pause() the moment Save's popup
  * has been OK'd, leaving the browser open on the result instead of moving on and closing.
  */
 const holdOpen = !!process.env.E2E_HOLD_OPEN;
-
-function pickRandom<T>(items: T[]): T {
-    return items[Math.floor(Math.random() * items.length)];
-}
 
 /** The band a PoC test calls normal, as its row states it. */
 type NormalRange = { min: number; max: number; decimals: number };
@@ -155,47 +152,47 @@ export class CaseHistoryPage {
     /**
      * Picks a random option out of the live dropdown, skipping anything already used
      * in this run so every symptom / test row gets a distinct value.
+     *
+     * Opens through the .selectize-control wrapper (see openSelectize): a JS click on
+     * the collapsed inner input fires no mousedown, so the list never appears and the
+     * rest of the journey — Save, then handing the visit to a doctor — never runs.
      */
     private async selectRandomOption(
         field: string | Locator,
         optionFilter: RegExp,
         alreadySelected: string[] = [],
-        clickParent = false
+        _clickParent = false
     ): Promise<string> {
         const input =
             typeof field === 'string'
                 ? this.page.getByRole('textbox', { name: field }).first()
                 : field;
 
-        if (clickParent) {
-            await input.evaluate((element) => {
-                (element.parentElement as HTMLElement).click();
+        let picked = await pickRandomOption(this.page, input, {
+            filter: optionFilter,
+            exclude: alreadySelected,
+            timeout: 15000,
+        });
+
+        if (!picked) {
+            // Remote catalogues sometimes stay empty until a query is typed.
+            await input.click({ force: true }).catch(() => undefined);
+            await input.pressSequentially('a', { delay: 40 }).catch(() => undefined);
+            picked = await pickRandomOption(this.page, input, {
+                filter: optionFilter,
+                exclude: alreadySelected,
+                timeout: 10000,
             });
-        } else {
-            await input.click();
         }
 
-        const options = this.page
-            .locator('.selectize-dropdown:visible .option')
-            .filter({ hasText: optionFilter });
-        await expect(options.first()).toBeVisible({ timeout: 10000 });
-
-        // Click by index rather than re-finding the option by its text: selectize
-        // re-renders the list as it filters, and the second lookup can resolve to an
-        // element that is already detached.
-        const candidates = (await options.allInnerTexts())
-            .map((text, index) => ({ text: text.trim(), index }))
-            .filter(({ text }) => text.length > 0 && !alreadySelected.includes(text));
-
         expect(
-            candidates.length,
-            `No unused dropdown option left (already used: ${alreadySelected.join(', ')})`
-        ).toBeGreaterThan(0);
+            picked,
+            `The dropdown offered no unused option matching ${optionFilter} (already used: ${
+                alreadySelected.join(', ') || 'none'
+            })`
+        ).toBeTruthy();
 
-        const selected = pickRandom(candidates);
-        await options.nth(selected.index).click();
-
-        return selected.text;
+        return picked as string;
     }
 
     /**

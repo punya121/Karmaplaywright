@@ -8,6 +8,11 @@ import {
     type ConsultationSummary,
     type MedicineLine,
 } from '../pages/prescription-form.page';
+import {
+    isParallelConsultation,
+    signalDoctorReady,
+    waitForAssigned,
+} from '../support/consultation-handshake';
 import { runModuleCases } from '../support/module-case';
 
 /** The prescription as one line, the way the report and the console show it. */
@@ -32,6 +37,9 @@ test.use({
     launchOptions: {
         slowMo: Number(process.env.E2E_SLOW_MO ?? 800),
         args: [
+            // Sit on the right when the centre worker is also headed, so both windows
+            // are visible instead of stacked.
+            '--window-position=1280,0',
             // Chrome's camera and microphone prompt is browser chrome, drawn outside the
             // page, so no locator can reach it and a run that waits for one hangs behind
             // it. These two settle it before it is ever asked: the first answers the
@@ -86,15 +94,17 @@ test.use({
  *
  * The one thing it needs is a patient in the queue. Prescriptions reach a doctor by being
  * handed over on Doctor Selection, which tests/patient/full-consultation.spec.ts does end
- * to end — run that first against a fresh environment, or sign in as a doctor who already
- * has a queue.
+ * to end — `npm run test:consultation-flow:headed` starts both workers together so this
+ * window stays open on Doctor Home while the centre registers and assigns, then opens
+ * that patient rather than a random leftover. Run this spec alone against a doctor who
+ * already has a queue.
  */
 test.describe('Doctor consultation: queue to saved prescription', () => {
     test.describe.configure({ mode: 'serial' });
 
-    // Up to three medicines and three tests, each a selectize round trip against a live
-    // catalogue, and all of it at demo pace.
-    test.setTimeout(600000);
+    // Waiting for the centre worker to assign, then up to three medicines and three
+    // tests at demo pace — well past the default.
+    test.setTimeout(1500000);
 
     /**
      * Whether this run was the one that brought the doctor on duty. A doctor who was
@@ -152,16 +162,26 @@ test.describe('Doctor consultation: queue to saved prescription', () => {
                             cameOnDuty ? 'checked in by this run' : 'already on duty'
                         }`,
                     });
+
+                    if (isParallelConsultation()) {
+                        signalDoctorReady();
+                    }
                 },
             },
             {
                 module: 'Doctor Home',
                 title: 'Take a waiting patient off the queue',
-                // Which patient is deliberately random: `#optradio` in the recording is
-                // the id *every* row's radio carries, so it only ever meant "whoever is
-                // first", and two runs against one centre would collide on them.
+                // Paired with the centre worker, this is the patient that worker just
+                // assigned. Alone, it is random: `#optradio` in the recording is the id
+                // *every* row's radio carries, so it only ever meant "whoever is first",
+                // and two runs against one centre would collide on them.
                 run: async () => {
-                    waiting = await doctorHome.selectRandomWaitingPatient();
+                    if (isParallelConsultation()) {
+                        const assigned = await waitForAssigned();
+                        waiting = await doctorHome.waitForPatient(assigned.displayId);
+                    } else {
+                        waiting = await doctorHome.selectRandomWaitingPatient();
+                    }
                     test.info().annotations.push({
                         type: 'patient',
                         description:

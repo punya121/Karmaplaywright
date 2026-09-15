@@ -14,6 +14,11 @@ import { LoginPage } from '../pages/login.page';
 import { PatientSearchPage, type IdentifiedPatient } from '../pages/patient-search.page';
 import { PrescriptionSearchPage } from '../pages/prescription-search.page';
 import { RegistrationPage } from '../pages/registration.page';
+import {
+    isParallelConsultation,
+    signalAssigned,
+    waitForDoctorReady,
+} from '../support/consultation-handshake';
 import { runModuleCases } from '../support/module-case';
 
 // Paced to be watchable: every browser action pauses long enough to follow on
@@ -21,7 +26,12 @@ import { runModuleCases } from '../support/module-case';
 // walkthrough (E2E_SLOW_MO=1500) or drop it to 0 to run at full speed. Pair with
 // --headed, or there is nothing to watch.
 test.use({
-    launchOptions: { slowMo: Number(process.env.E2E_SLOW_MO ?? 800) },
+    launchOptions: {
+        slowMo: Number(process.env.E2E_SLOW_MO ?? 800),
+        // Sit on the left when the doctor worker is also headed, so both windows are
+        // visible instead of stacked.
+        args: ['--window-position=0,0'],
+    },
 });
 
 /**
@@ -54,10 +64,15 @@ test.use({
  *
  * A doctor who is not on duty cannot be handed anything: Prescription (Centre) greys
  * out the doctor icon (pointer-events: none) when nobody is checked in, and Doctor
- * Selection swallows the pick when the doctor chosen is not the one who is. So the run
- * signs in as the doctor, presses Check In on DoctorHome, signs back in as the centre,
- * and assigns from the same prescription row - every time, since only the doctor's own
- * home page can answer whether they are on duty.
+ * Selection swallows the pick when the doctor chosen is not the one who is.
+ *
+ * Run alone, this spec signs in as the doctor, presses Check In on DoctorHome, signs
+ * back in as the centre, and assigns from the same prescription row — only the doctor's
+ * own home page can answer whether they are on duty.
+ *
+ * Run as the centre half of `npm run test:consultation-flow:headed`, it stays logged in
+ * as the centre and waits for the doctor worker to Check In (see
+ * tests/support/consultation-handshake.ts) instead of stealing this window.
  */
 async function checkInDoctorAndReturnAsCentre(page: Page): Promise<boolean> {
     const loginPage = new LoginPage(page);
@@ -240,11 +255,26 @@ test.describe('Full consultation: register, consent, case history, doctor', () =
                 // doctor at the centre is checked in, while Doctor Selection asks
                 // GetAvailability_of_Doctor about the one being picked and swallows the
                 // click in silence when the answer is 0. The only way to know is to ask
-                // as the doctor, so the run does that every time rather than reading the
-                // icon — ensureCheckedIn() is a no-op for a doctor already on duty, and
-                // tests/doctor/doctor-consultation.spec.ts checks them back out after
-                // every run of its own, so off duty is the ordinary state to find them in.
+                // as the doctor.
+                //
+                // Paired with the doctor worker, that worker is already on DoctorHome —
+                // waiting on its handshake file is enough, and logging out of this
+                // window would hide the centre session the headed run is meant to show.
+                // Alone, this run still signs in as the doctor itself.
                 run: async () => {
+                    if (isParallelConsultation()) {
+                        console.log(
+                            `Waiting for ${doctorUsername} to Check In in the doctor worker`
+                        );
+                        await waitForDoctorReady();
+                        test.info().annotations.push({
+                            type: 'doctor check-in',
+                            description: `${doctorUsername} checked in by the doctor worker`,
+                        });
+                        await prescriptionPage.expectPrescriptionFor(registered);
+                        return;
+                    }
+
                     const clickable = await prescriptionPage.isDoctorSelectionClickable(registered);
                     const noDoctorOnDuty =
                         !clickable &&
@@ -282,6 +312,13 @@ test.describe('Full consultation: register, consent, case history, doctor', () =
 
                     const doctor = await doctorPage.selectDoctor();
                     await doctorPage.saveAndExpectPrescriptionCentre();
+
+                    if (isParallelConsultation()) {
+                        signalAssigned({
+                            displayId: registered.displayId,
+                            prescriptionId,
+                        });
+                    }
 
                     test.info().annotations.push({
                         type: 'doctor',

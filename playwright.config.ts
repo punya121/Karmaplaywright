@@ -34,6 +34,11 @@ export default defineConfig({
   timeout: slowMo ? 120000 : 30000,
   /* Run tests in files in parallel */
   fullyParallel: true,
+  /* Clears leftover handshake files so a headed pair cannot open yesterday's patient. */
+  globalSetup:
+    process.env.E2E_PARALLEL_CONSULTATION === '1'
+      ? './tests/support/consultation-handshake-setup.ts'
+      : undefined,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
@@ -69,31 +74,39 @@ export default defineConfig({
   /* Configure projects for major browsers */
   projects: [
     /*
-     * The consultation flow, in the order it has to happen: a prescription only reaches
-     * a doctor's queue once Full Consultation has registered the patient and handed it
-     * over on Doctor Selection, so Doctor Consultation has nothing to open until that
-     * has finished.
+     * The consultation flow as two workers at once when run via
+     * `npm run test:consultation-flow:headed` (E2E_PARALLEL_CONSULTATION=1, --workers=2).
+     * The centre half registers and assigns; the doctor half checks in and waits for that
+     * patient. They coordinate through tests/support/consultation-handshake.ts — there is
+     * no project `dependencies` list, because that would finish the centre window before
+     * the doctor window ever opened.
      *
-     * `dependencies` is what orders them. Playwright runs a project's dependencies to
-     * completion first, and skips the dependent project entirely if one of them fails —
-     * so a failed Full Consultation stops Doctor Consultation from running at all,
-     * without any waiting or polling in the specs themselves. Both reuse the same
-     * fixtures, page objects, .env and `use` block as every other project here.
-     *
-     * Run the pair with --project=doctor-consultation: the dependency comes first on its
-     * own. Add --no-deps to run the doctor half by itself against a queue that already
-     * has someone in it.
+     * Run one half alone with --project=full-consultation or
+     * `npm run test:doctor-consultation:only` (existing queue, no handshake).
      */
     {
       name: 'full-consultation',
       testMatch: /patient[\\/]full-consultation\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: ['--window-position=0,0'],
+        },
+      },
     },
     {
       name: 'doctor-consultation',
       testMatch: /doctor[\\/]doctor-consultation\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
-      dependencies: ['full-consultation'],
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: [
+            '--window-position=1280,0',
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+          ],
+        },
+      },
     },
 
     {

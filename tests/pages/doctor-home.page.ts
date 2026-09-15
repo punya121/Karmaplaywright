@@ -185,6 +185,32 @@ export class DoctorHomePage {
     }
 
     /**
+     * Reloads DoctorHome until the given patient is in the queue, then selects that row.
+     * The grid does not always refresh itself, so a doctor who checked in before the
+     * centre assigned would otherwise sit on an empty list forever.
+     */
+    async waitForPatient(displayId: string, timeoutMs = 900000): Promise<QueuedPatient> {
+        const needle = displayId.trim();
+        const deadline = Date.now() + timeoutMs;
+
+        while (Date.now() < deadline) {
+            await this.open();
+            const index = await this.findQueueIndex(needle);
+
+            if (index >= 0) {
+                return this.selectWaitingPatientAt(index);
+            }
+
+            await this.page.waitForTimeout(3000);
+        }
+
+        throw new Error(
+            `DoctorHome never listed ${needle} within ${timeoutMs}ms. ` +
+                'The centre worker should have assigned that visit after this doctor checked in.'
+        );
+    }
+
+    /**
      * Selects one waiting patient at random and reports who it was. Fails with the queue's
      * actual state rather than a bare timeout, because an empty queue is the ordinary
      * reason this spec cannot run and is worth saying outright.
@@ -218,15 +244,35 @@ export class DoctorHomePage {
         }
 
         const index = pickRandom(notYetAttended.length > 0 ? notYetAttended : alreadyAttended);
-        const row = rows.nth(index);
+        return this.selectWaitingPatientAt(index);
+    }
 
+    private async findQueueIndex(displayId: string): Promise<number> {
+        const count = await this.waitingCount();
+        const rows = this.queueRows();
+        const needle = displayId.trim();
+
+        for (let index = 0; index < count; index += 1) {
+            const summary = (await rows.nth(index).innerText()).replace(/\s+/g, ' ').trim();
+            const rowId = /\b([A-Z]{2,4}\d{5,})\b/.exec(summary)?.[1] ?? '';
+
+            if (rowId === needle || (needle && summary.includes(needle))) {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private async selectWaitingPatientAt(index: number): Promise<QueuedPatient> {
+        const row = this.queueRows().nth(index);
         const summary = (await row.innerText()).replace(/\s+/g, ' ').trim();
         const displayId = /\b([A-Z]{2,4}\d{5,})\b/.exec(summary)?.[1] ?? '';
 
         // Not attended yet: the radios all answer to id="optradio", so they are addressed
         // through their own row instead. force: true because the label sits over the
         // control on this grid.
-        if (notYetAttended.includes(index)) {
+        if (await this.attendingRadio(row).count()) {
             const radio = this.attendingRadio(row);
 
             // <input type="radio" id="optradio" value="7327998"
