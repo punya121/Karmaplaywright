@@ -13,6 +13,7 @@ import {
     validPassword,
     validUsername,
 } from '../config/test-env';
+import { createConsultation } from '../data/consultations';
 import { createSavePatient } from '../data/patients';
 import { CaseHistoryPage } from '../pages/case-history.page';
 import { ConsentFormPage } from '../pages/consent-form.page';
@@ -21,10 +22,29 @@ import { DoctorSelectionPage } from '../pages/doctor-selection.page';
 import { LoginPage } from '../pages/login.page';
 import { PatientSearchPage, type IdentifiedPatient } from '../pages/patient-search.page';
 import { PendingBillPage } from '../pages/pending-bill.page';
-import { PrescriptionFormPage } from '../pages/prescription-form.page';
+import {
+    PrescriptionFormPage,
+    type ConsultationSummary,
+    type MedicineLine,
+} from '../pages/prescription-form.page';
 import { PrescriptionSearchPage } from '../pages/prescription-search.page';
 import { RegistrationPage } from '../pages/registration.page';
 import { runModuleCases } from '../support/module-case';
+
+/** The prescription as one line, the way the report and the console show it. */
+function describePrescription(lines: MedicineLine[]): string {
+    return lines
+        .map(
+            (line) =>
+                `${line.medicine} (${line.category})` +
+                `${line.dosage ? ` ${line.dosage}` : ''}` +
+                `${line.frequency ? ` ${line.frequency}` : ''}` +
+                `${line.duration ? ` for ${line.duration}` : ''}` +
+                `${line.instruction ? `, ${line.instruction}` : ''}` +
+                `${line.route ? `, ${line.route}` : ''}`
+        )
+        .join(' | ');
+}
 
 /**
  * One consultation, two live browser sessions, opened one after the other.
@@ -158,6 +178,13 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
         let assignedDoctor = '';
         let queued!: QueuedPatient;
         let joinedPrescriptionId = '';
+
+        // What browser 2 writes into the form, and the alerts that session raises.
+        // The dialogs are captured the moment the doctor's page exists, so a refused
+        // save reports the app's own words instead of timing out.
+        const consultation = createConsultation();
+        let summary!: ConsultationSummary;
+        let doctorDialogMessages: string[] = [];
 
         await runModuleCases([
             {
@@ -392,7 +419,7 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
 
                     // Captured before anything is opened, so a join the app objects to
                     // reports the app's own words rather than a timeout.
-                    prescriptionForm.captureDialogs();
+                    doctorDialogMessages = prescriptionForm.captureDialogs();
 
                     await doctorLogin.loginExpectingHome(doctorUsername, doctorPassword);
 
@@ -428,12 +455,33 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
             {
                 module: 'Doctor Selection',
                 title: 'Hand the visit to that doctor from browser 1',
-                // Back in browser 1, which has been on this screen the whole time. It is
-                // reloaded first: the doctor cards are rendered when the page loads, and
-                // this page loaded before the doctor came on duty, so the card being
-                // clicked would otherwise be one that was never drawn.
+                // Back in browser 1. The screen has to be loaded again either way: the
+                // doctor cards are drawn when the page loads, and this page loaded before
+                // the doctor came on duty, so a card clicked without reloading would be one
+                // that was never drawn.
+                //
+                // It is not always still on that screen. Browser 1 sits here untouched
+                // while browser 2 signs in and comes on duty, and runs have come back to
+                // find it on /Home - still signed in, just moved. Reloading then only
+                // reloads Home, and the handover fails with "Doctor Selection did not
+                // open" two stages before anything is actually wrong. So where it is gets
+                // checked rather than assumed, and the screen is re-opened from the centre
+                // grid when it has wandered.
                 run: async () => {
-                    await page.reload();
+                    if (/DoctorSelection/i.test(page.url())) {
+                        await page.reload();
+                    } else {
+                        console.log(
+                            `Browser 1 is on ${page.url()} rather than Doctor Selection; ` +
+                                're-opening it from Prescription (Centre)'
+                        );
+
+                        await prescriptionPage.open();
+                        prescriptionId = await prescriptionPage.openDoctorSelectionFor(registered, {
+                            allowWhileNoDoctorOnDuty: true,
+                        });
+                    }
+
                     await doctorSelection.expectLoaded(prescriptionId);
 
                     assignedDoctor = await doctorSelection.selectDoctor();
@@ -581,6 +629,96 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                         `Both sessions are live on consultation ${joinedPrescriptionId}: the ` +
                             `centre holds ${registered.displayId}'s visit open while ` +
                             `${assignedDoctor} has the prescription form open in browser 2`
+                    );
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Write the consultation in browser 2',
+                // Every value in it comes out of the page. fill() opens a module case per
+                // section of the form - diagnosis, symptoms, medicines, OTC, diagnostics,
+                // referral, review - and those finer cases are what the report shows, so a
+                // run says which section of the form broke rather than just "the form".
+                // This stage is their container, nothing more.
+                run: async () => {
+                    summary = await prescriptionForm.fill(consultation, joinedPrescriptionId);
+
+                    expect(
+                        summary.medicines.length,
+                        'The consultation was written with no medicine on it'
+                    ).toBeGreaterThan(0);
+
+                    const written = describePrescription(summary.medicines);
+
+                    test.info().annotations.push({ type: 'prescription', description: written });
+                    console.log(`Prescription ${joinedPrescriptionId}: ${written}`);
+                },
+            },
+            {
+                module: 'Prescription Form',
+                title: 'Save the prescription from browser 2',
+                // The button is the form's submit, so a save that worked leaves the page;
+                // one that did not reports the app's own reason instead of being clicked
+                // again.
+                //
+                // The exception is the stock check: a centre holding fewer of a medicine
+                // than was prescribed refuses the whole save and says what to do about it,
+                // so the run cuts the quantity back, takes that medicine off, or puts
+                // another in its place and saves again. That is the app behaving
+                // correctly, so it is reported as what was written rather than as a
+                // failure.
+                run: async () => {
+                    const doctor = doctorPage as Page;
+                    const adjustments = await prescriptionForm.saveAndExpectLeavingForm(
+                        doctorDialogMessages,
+                        summary
+                    );
+
+                    for (const adjustment of adjustments) {
+                        test.info().annotations.push({
+                            type: 'stock',
+                            description:
+                                `${adjustment.medicine}: ${adjustment.available} in stock against ` +
+                                `${adjustment.prescribed} prescribed - ${adjustment.detail}`,
+                        });
+                    }
+
+                    // What went in is no longer what was filled in, so the run says both
+                    // rather than leaving the earlier annotation to be read as the truth.
+                    if (adjustments.length > 0) {
+                        test.info().annotations.push({
+                            type: 'prescription as saved',
+                            description: describePrescription(summary.medicines),
+                        });
+                    }
+
+                    console.log(
+                        `Saved prescription ${joinedPrescriptionId} - browser 2 is now on ` +
+                            `${doctor.url()}`
+                    );
+                },
+            },
+            {
+                module: 'Doctor Approval',
+                title: 'Approve the saved prescription in browser 2',
+                // The save comes back to the patient's summary, where the written
+                // consultation waits on the doctor's own approval - until that is given the
+                // queue row stays "Pending Doctor Approval" and the consultation is not
+                // done. This is the step the live spec was missing: it left every
+                // consultation it opened unwritten and unapproved.
+                run: async () => {
+                    const approved = await prescriptionForm.approveIfOffered();
+
+                    test.info().annotations.push({
+                        type: 'approval',
+                        description: approved
+                            ? 'approved on the patient summary after saving'
+                            : 'no Approve button was offered, so nothing was left to approve',
+                    });
+                    console.log(
+                        approved
+                            ? `Approved prescription ${joinedPrescriptionId}`
+                            : `Prescription ${joinedPrescriptionId} offered no Approve button`
                     );
                 },
             },
