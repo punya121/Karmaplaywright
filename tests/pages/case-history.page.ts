@@ -146,10 +146,36 @@ export class CaseHistoryPage {
         return messages;
     }
 
+    /**
+     * A control only the case history form has.
+     *
+     * "Save" alone is not that control. /PatientForm — the patient's own record, and the
+     * screen "Add Case History" is pressed on — carries a Save button of its own, so a
+     * check that looked only for one passed while the run was still sitting on the
+     * patient's record, and the failure surfaced minutes later inside fill(), as a
+     * timeout on a nursing staff dropdown that was never going to be there. The weight
+     * box is on the case history form and on nothing else in this journey, so it is what
+     * says the form is actually open.
+     */
+    private formAnchor(): Locator {
+        return this.page
+            .locator('#weight')
+            .or(this.page.getByRole('textbox', { name: '--Select a Nursing Staff--' }))
+            .first();
+    }
+
     async expectLoaded(): Promise<void> {
-        await expect(this.page.getByRole('button', { name: 'Save' })).toBeVisible({
-            timeout: 15000,
-        });
+        await expect(
+            this.formAnchor(),
+            `The case history form is not open — the run is on ${this.page.url()}, which ` +
+                'carries no vitals or nursing staff field. A click on "Add Case History" ' +
+                'that the page swallowed leaves exactly this state.'
+        ).toBeVisible({ timeout: 15000 });
+
+        await expect(
+            this.page.getByRole('button', { name: 'Save' }),
+            'The case history form has no Save button'
+        ).toBeVisible({ timeout: 15000 });
     }
 
     /**

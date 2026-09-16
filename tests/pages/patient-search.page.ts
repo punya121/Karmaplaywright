@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { baseUrl } from '../config/test-env';
+import { isVisibleWithin } from './selectize';
 
 export type ExistingPatient = IdentifiedPatient & {
     /** Row text, for reporting which patient the run picked. */
@@ -292,6 +293,226 @@ export class PatientSearchPage {
         await expect(this.page.locator('#patient_name')).toHaveValue(patient.name, {
             timeout: 15000,
         });
+    }
+
+    /**
+     * Presses "Add Case History" on the patient's own record and does not come back until
+     * the case history form is genuinely open.
+     *
+     * A bare click here is not enough, and the way it fails is silent. The button carries
+     * no href and no submit behaviour — everything it does lives in a handler the page
+     * binds when its own scripts run — so a click that lands before the binding, or that
+     * the browser refuses because a field on the record will not validate, does nothing
+     * at all. The page stays on /PatientForm, the button takes the focus ring, and
+     * nothing anywhere says why. The run then walks on into the case history form's
+     * fields and hangs on the first one, several minutes and one module case away from
+     * the thing that actually went wrong.
+     *
+     * So the click is made against a page whose scripts have run, the outcome is waited
+     * for as the form appearing rather than as the click returning, and a click that went
+     * nowhere is tried again. What is still on /PatientForm after that is reported with
+     * the page's own reasons attached: the fields the browser will not accept and what it
+     * says about them, anything the app raised as an alert, and whether the click opened
+     * a tab instead of navigating.
+     */
+    async openCaseHistoryFromPatientForm(
+        dialogMessages: string[] = [],
+        options: {
+            /**
+             * What to do about a refusal that is the centre's state rather than this
+             * patient's - the previous day's bills and reconciliations. Called once, with
+             * the app's own message, and expected to leave the run back on the patient's
+             * record. Without one, the refusal is reported and the run stops.
+             */
+            onCentreBlocked?: (message: string) => Promise<void>;
+        } = {}
+    ): Promise<void> {
+        const page = this.page;
+        const patientForm = page.url();
+        let recoveryUsed = false;
+
+        const button = page
+            .getByRole('button', { name: /add case history/i })
+            .or(page.getByRole('link', { name: /add case history/i }))
+            .first();
+
+        await expect(
+            button,
+            `The patient's record at ${patientForm} offers no "Add Case History" control`
+        ).toBeVisible({ timeout: 15000 });
+
+        // The case history form's own field — the same anchor CaseHistoryPage checks for,
+        // and the only thing that distinguishes the form from the record it was opened
+        // from, both of which carry a Save button.
+        const caseHistoryField = page
+            .locator('#weight')
+            .or(page.getByRole('textbox', { name: '--Select a Nursing Staff--' }))
+            .first();
+
+        for (let attempt = 1; attempt <= 4; attempt += 1) {
+            const alertsBefore = dialogMessages.length;
+
+            // The handler is bound while the page's own scripts run, which is after the
+            // navigation the run waited for. Clicking into that gap is what gets swallowed.
+            await page.waitForLoadState('load').catch(() => undefined);
+
+            await button.click({ timeout: 15000 }).catch(() => undefined);
+
+            const opened = await Promise.race([
+                caseHistoryField
+                    .waitFor({ state: 'visible', timeout: 15000 })
+                    .then(() => true)
+                    .catch(() => false),
+                page
+                    .waitForURL((url) => url.href !== patientForm, { timeout: 15000 })
+                    .then(() => true)
+                    .catch(() => false),
+            ]);
+
+            if (opened && (await isVisibleWithin(caseHistoryField, 15000))) {
+                return;
+            }
+
+            const raised = dialogMessages.slice(alertsBefore).map((message) => message.trim());
+
+            // The centre-wide block — the previous day's bills and reconciliations — is
+            // not about this patient and never clears on its own. Where the caller knows
+            // how to deal with it (tests/live/ creates the outstanding bills), it is given
+            // the app's own message and one go at it, and the click is then tried again
+            // against a centre that is no longer blocked. A second refusal after that is
+            // reported rather than papered over: it means the backlog was not what was
+            // standing in the way.
+            const centreBlocked = raised.find((message) =>
+                /reconciliation|create bills|previous day/i.test(message)
+            );
+
+            if (centreBlocked && options.onCentreBlocked && !recoveryUsed) {
+                recoveryUsed = true;
+                console.log(
+                    `The app refused because the centre is blocked: ${centreBlocked}\n` +
+                        'Clearing what it is waiting on, then opening the case history again.'
+                );
+
+                await options.onCentreBlocked(centreBlocked);
+                continue;
+            }
+
+            if (attempt < 4) {
+                // Some of the app's refusals end with "kindly refresh the page", and the
+                // centre-wide ones - the previous day's reconciliation and billing - are
+                // raised off state the page read when it loaded. Where the app asks for a
+                // refresh, it gets one before the next attempt: a block that was cleared
+                // while this run was in flight is answered by exactly that, and one that
+                // was not comes back on the reload and is reported.
+                if (raised.some((message) => /refresh the page/i.test(message))) {
+                    console.log(
+                        `The app refused and asked for a refresh: ${raised[0]}. Reloading the ` +
+                            "patient's record and trying once more."
+                    );
+                    await page.reload({ waitUntil: 'load' }).catch(() => undefined);
+                    await expect(
+                        button,
+                        'The patient record lost its "Add Case History" control on reload'
+                    ).toBeVisible({ timeout: 15000 });
+                } else {
+                    console.log(
+                        `"Add Case History" did not open the form (attempt ${attempt}); the run ` +
+                            `is still on ${page.url()}. Trying again.`
+                    );
+                }
+            }
+        }
+
+        throw new Error(
+            `"Add Case History" did not open the case history form. The run is still on ` +
+                `${page.url()}.\n${await this.describeWhyNothingHappened(dialogMessages)}`
+        );
+    }
+
+    /**
+     * Why a click on the patient's record went nowhere, in the page's own words. Every
+     * part of this is read off the live page rather than guessed at, so the run reports
+     * the app's reason instead of a bare timeout.
+     */
+    private async describeWhyNothingHappened(dialogMessages: string[]): Promise<string> {
+        const reasons: string[] = [];
+
+        // A control the browser will not accept blocks a submit outright and says nothing
+        // to the page. Disabled and hidden controls are exempt from validation, so
+        // anything listed here is genuinely in the way.
+        const invalid = await this.page
+            .evaluate(() =>
+                Array.from(
+                    document.querySelectorAll<
+                        HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+                    >('input, select, textarea')
+                )
+                    .filter((field) => typeof field.checkValidity === 'function')
+                    .filter((field) => !field.checkValidity())
+                    .map((field) => {
+                        const name =
+                            field.getAttribute('name') ||
+                            field.id ||
+                            field.getAttribute('placeholder') ||
+                            field.tagName.toLowerCase();
+                        return `${name}: ${field.validationMessage || 'will not validate'}`;
+                    })
+            )
+            .catch(() => [] as string[]);
+
+        if (invalid.length > 0) {
+            reasons.push(
+                'The browser will not submit this form until these are put right:\n' +
+                    invalid.map((field) => `  - ${field}`).join('\n')
+            );
+        }
+
+        // The same refusal once per attempt is one refusal, not three.
+        const raised = [...new Set(dialogMessages.map((message) => message.trim()))].filter(Boolean);
+
+        if (raised.length > 0) {
+            reasons.push(`The app raised: ${raised.join(' | ')}`);
+        }
+
+        // A centre with the previous day's billing still open is refused every clinical
+        // action until that is closed, and no amount of retrying changes it. It is worth
+        // saying outright that this is the environment's state and not the run's doing —
+        // it is the difference between a bug to chase and a centre to tidy up.
+        if (raised.some((message) => /reconciliation|create bills/i.test(message))) {
+            reasons.push(
+                'That is the app blocking the centre, not the automation: this account has ' +
+                    "the previous day's reconciliation and billing still open, and it refuses " +
+                    'to start a case history until they are closed. Sign in as ' +
+                    `${process.env.E2E_USERNAME || 'the centre user'} and complete the pending ` +
+                    'reconciliation and billing, or point the run at a centre that has none ' +
+                    '(E2E_USERNAME / E2E_PASSWORD). The run reloaded the page and tried again ' +
+                    'first, which is what the message itself asks for, so the block was still ' +
+                    'in place.'
+            );
+        }
+
+        // A handler that opens a tab rather than navigating leaves the run's own page
+        // exactly where it was, which looks identical to a click that did nothing.
+        const otherTabs = this.page
+            .context()
+            .pages()
+            .filter((open) => open !== this.page)
+            .map((open) => open.url());
+
+        if (otherTabs.length > 0) {
+            reasons.push(`The click opened another tab instead: ${otherTabs.join(', ')}`);
+        }
+
+        if (reasons.length === 0) {
+            reasons.push(
+                'The page reported nothing: no field failed validation, the app raised no ' +
+                    'alert, and no tab was opened. That is what a click landing before the ' +
+                    "button's handler was bound looks like, or a handler whose own lookup " +
+                    'failed silently.'
+            );
+        }
+
+        return reasons.join('\n');
     }
 
     /**

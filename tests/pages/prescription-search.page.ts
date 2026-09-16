@@ -71,7 +71,10 @@ export class PrescriptionSearchPage {
      * anything is clicked: a doctor assigned to the wrong visit is not something the
      * run would notice afterwards.
      */
-    async openDoctorSelectionFor(patient: IdentifiedPatient): Promise<string> {
+    async openDoctorSelectionFor(
+        patient: IdentifiedPatient,
+        options: { allowWhileNoDoctorOnDuty?: boolean } = {}
+    ): Promise<string> {
         const row = this.rowsFor(patient).first();
         await expect(
             row,
@@ -110,15 +113,29 @@ export class PrescriptionSearchPage {
             ]);
         } else {
             const disabledByApp = await this.isDoctorLinkDisabledByApp(doctorLink);
-            expect(
-                disabledByApp,
-                `The doctor icon for ${patient.displayId} is not clickable because no ` +
-                    `doctor is checked in (pointer-events: none). Log in as the doctor, ` +
-                    `press Check In, then come back as the centre to assign them.`
-            ).toBe(false);
+
+            // Opening the screen and assigning from it are two different things. The icon
+            // is dead while nobody is on duty, but its href is the same plain GET it
+            // always was, so the screen itself can still be opened - it simply has no
+            // doctor cards on it yet. A run that brings the doctor on duty *after*
+            // landing here (tests/live/) asks for exactly that and reloads once the
+            // doctor is in; every other caller still wants the failure, because for them
+            // an empty Doctor Selection is a dead end.
+            if (!options.allowWhileNoDoctorOnDuty) {
+                expect(
+                    disabledByApp,
+                    `The doctor icon for ${patient.displayId} is not clickable because no ` +
+                        `doctor is checked in (pointer-events: none). Log in as the doctor, ` +
+                        `press Check In, then come back as the centre to assign them.`
+                ).toBe(false);
+            }
 
             console.log(
-                `Doctor icon for ${patient.displayId} is covered by another element; opening ${href} directly`
+                `Doctor icon for ${patient.displayId} is ${
+                    disabledByApp
+                        ? 'disabled by the app (no doctor on duty yet)'
+                        : 'covered by another element'
+                }; opening ${href} directly`
             );
             await this.page.goto(href);
             await expect(this.page).toHaveURL(landed, { timeout: 30000 });

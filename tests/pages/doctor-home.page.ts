@@ -38,6 +38,19 @@ export type QueuedPatient = {
     via: 'attending' | 'prescription';
 };
 
+/**
+ * Which consultation a run is after, when it is after a particular one rather than
+ * whichever is waiting. Both identifiers are optional because the two sides of a live
+ * pair know different things: Doctor Selection names the prescription, the patient's own
+ * record names the patient, and the queue row shows both only sometimes.
+ */
+export type QueueMatch = {
+    /** The centre-prefixed patient id, e.g. DH3951875. */
+    displayId?: string;
+    /** The prescription the handover created, e.g. 7327998. */
+    prescriptionId?: string;
+};
+
 export class DoctorHomePage {
     constructor(private readonly page: Page) {}
 
@@ -258,6 +271,170 @@ export class DoctorHomePage {
         const prescriptionId = ((await viewLink.getAttribute('name')) ?? '').trim();
 
         return { index, displayId, summary, prescriptionId, via: 'prescription' };
+    }
+
+    /**
+     * Reads one queue row without touching it - the same three facts
+     * selectRandomWaitingPatient() reads off the row it draws, but for a run that
+     * already knows which patient it is looking for. Nothing is clicked, so a row read
+     * and rejected is left exactly as it was found.
+     */
+    private async readQueueRow(index: number): Promise<QueuedPatient> {
+        const row = this.queueRows().nth(index);
+        const summary = (await row.innerText()).replace(/\s+/g, ' ').trim();
+        const displayId = /\b([A-Z]{2,4}\d{5,})\b/.exec(summary)?.[1] ?? '';
+
+        const radio = this.attendingRadio(row);
+
+        if (await radio.count()) {
+            const prescriptionId = ((await radio.getAttribute('value')) ?? '').trim();
+            return { index, displayId, summary, prescriptionId, via: 'attending' };
+        }
+
+        const prescriptionId = (
+            (await this.prescriptionViewLink(row)
+                .getAttribute('name')
+                .catch(() => null)) ?? ''
+        ).trim();
+
+        return { index, displayId, summary, prescriptionId, via: 'prescription' };
+    }
+
+    /**
+     * Whether a row is the consultation being looked for. Either identifier is enough on
+     * its own: the prescription id is exact where the grid names one, and the patient id
+     * covers the rows that do not - but the two never disagree about a match, because a
+     * row carrying a different prescription id for the same patient is a different visit.
+     */
+    private static rowMatches(row: QueuedPatient, match: QueueMatch): boolean {
+        if (match.prescriptionId && row.prescriptionId) {
+            return row.prescriptionId === match.prescriptionId;
+        }
+
+        if (match.displayId) {
+            const wanted = match.displayId.toUpperCase();
+            return (
+                row.displayId.toUpperCase() === wanted || row.summary.toUpperCase().includes(wanted)
+            );
+        }
+
+        return false;
+    }
+
+    /** The row for one particular consultation, or null while the queue has no such row. */
+    async findQueuedPatient(match: QueueMatch): Promise<QueuedPatient | null> {
+        const count = await this.waitingCount();
+
+        for (let index = 0; index < count; index += 1) {
+            const row = await this.readQueueRow(index);
+            if (DoctorHomePage.rowMatches(row, match)) {
+                return row;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Waits for one particular consultation to reach the doctor's queue, reloading
+     * DoctorHome between looks.
+     *
+     * This is the doctor's half of the live pair: the patient worker has just handed its
+     * prescription over on Doctor Selection, and the queue this doctor is sitting on was
+     * rendered before that happened. The grid does not push, so the only way to see the
+     * new row is to ask for the page again - and how long that takes is the app's
+     * business, not something a run can name in advance. So it polls for the row itself
+     * rather than sleeping for a length of time that would be a guess either way.
+     *
+     * Fails with the queue as it actually stands, which is the difference between "the
+     * handover did not reach this doctor" and "a locator timed out".
+     */
+    async waitForQueuedPatient(
+        match: QueueMatch,
+        options: { timeout?: number; pollInterval?: number } = {}
+    ): Promise<QueuedPatient> {
+        const { timeout = 180000, pollInterval = 3000 } = options;
+        const wanted = match.displayId || match.prescriptionId || '(nothing to match on)';
+        const deadline = Date.now() + timeout;
+
+        let lastSeen: string[] = [];
+
+        for (;;) {
+            await this.open();
+
+            const found = await this.findQueuedPatient(match);
+            if (found) {
+                return found;
+            }
+
+            const count = await this.waitingCount();
+            lastSeen = [];
+            for (let index = 0; index < count; index += 1) {
+                lastSeen.push((await this.readQueueRow(index)).summary);
+            }
+
+            if (Date.now() >= deadline) {
+                throw new Error(
+                    `${wanted} never appeared in the doctor's queue within ` +
+                        `${Math.round(timeout / 1000)}s. The queue holds ${count} row(s):\n` +
+                        (lastSeen.map((row) => `  - ${row}`).join('\n') || '  (none)') +
+                        '\nA handover only reaches this doctor when Doctor Selection assigned ' +
+                        'the prescription to *them*, so check which doctor the patient worker ' +
+                        'picked (E2E_DOCTOR_NAME) against the one signed in here.'
+                );
+            }
+
+            console.log(
+                `Prescription for ${wanted} is not in the queue yet ` +
+                    `(${count} row(s) waiting); looking again`
+            );
+            await this.page.waitForTimeout(pollInterval);
+        }
+    }
+
+    /**
+     * Takes a named patient off the queue, the way selectRandomWaitingPatient() takes an
+     * arbitrary one: a row still carrying its Attending radio is checked, which is what
+     * marks the patient as being attended, and a row already attended needs nothing
+     * selecting - its View link is the way back in.
+     *
+     * The row is read again by position and checked against the patient before anything
+     * is clicked: the grid re-renders whenever anyone at the centre is attended, so a row
+     * found a moment ago may now be somebody else's, and attending the wrong patient is
+     * exactly the failure this spec exists to rule out.
+     */
+    async selectQueuedPatient(patient: QueuedPatient, match?: QueueMatch): Promise<QueuedPatient> {
+        const wanted: QueueMatch = match ?? {
+            displayId: patient.displayId,
+            prescriptionId: patient.prescriptionId,
+        };
+
+        const current = await this.readQueueRow(patient.index);
+
+        expect(
+            DoctorHomePage.rowMatches(current, wanted),
+            `Queue row ${patient.index + 1} is no longer the consultation that was found ` +
+                `there — it now reads "${current.summary}". The queue re-rendered under the run.`
+        ).toBe(true);
+
+        if (current.via === 'prescription') {
+            await expect(
+                this.prescriptionViewLink(this.queueRows().nth(current.index)),
+                `Queue row ${current.index + 1} has been attended already but offers no ` +
+                    `Prescription View link, so there is no way into it: ${current.summary}`
+            ).toBeVisible({ timeout: 10000 });
+
+            return current;
+        }
+
+        // Same as the random draw: the radios all answer to id="optradio", so the control
+        // is addressed through its own row, force: true because the label sits over it,
+        // and click() rather than check() because changeStatus() re-renders the grid and
+        // check()'s follow-up assertion would fail on a control the app has replaced.
+        await this.attendingRadio(this.queueRows().nth(current.index)).click({ force: true });
+        await this.page.waitForLoadState('load').catch(() => undefined);
+
+        return current;
     }
 
     /**

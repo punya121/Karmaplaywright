@@ -96,18 +96,45 @@ export default defineConfig({
       dependencies: ['full-consultation'],
     },
 
+    /*
+     * The same journey as the pair above, but as two live sessions instead of one after
+     * the other: the patient's browser opens a second browser of its own when it reaches
+     * Doctor Selection, signs the doctor in there, and holds its own consultation open
+     * while that doctor finds it and joins it.
+     *
+     * It is one project running one test in one worker, deliberately — the second browser
+     * is launched by the test itself (chromium.launch()), at the line where it is wanted,
+     * so there is nothing to synchronise between workers and no --workers=2 to remember.
+     *
+     *   npm run test:live          (headless)
+     *   npm run test:live:headed   (both windows on screen, side by side)
+     */
+    {
+      name: 'live-consultation',
+      testMatch: /live[\\/]full-consultation-with-doctor\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+
+    /*
+     * tests/live/ is left to its own project above. The browser projects run everything
+     * else under tests/ — picking the live spec up here as well would mean a second
+     * doctor session against the same account, from a run that never asked for one.
+     */
     {
       name: 'chromium',
+      testIgnore: /live[\\/]/,
       use: { ...devices['Desktop Chrome'] },
     },
 
     {
       name: 'firefox',
+      testIgnore: /live[\\/]/,
       use: { ...devices['Desktop Firefox'] },
     },
 
     {
       name: 'webkit',
+      testIgnore: /live[\\/]/,
       use: { ...devices['Desktop Safari'] },
     },
 

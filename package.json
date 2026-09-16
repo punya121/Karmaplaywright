@@ -33,6 +33,10 @@
     "test:doctor-consultation:only": "playwright test --project=doctor-consultation --no-deps --workers=1",
     "test:doctor-consultation": "playwright test tests/doctor/doctor-consultation.spec.ts --project=chromium --workers=1",
     "test:doctor-consultation:headed": "playwright test tests/doctor/doctor-consultation.spec.ts --headed --project=chromium --workers=1",
+    "test:bill-recording": "playwright test tests/billing/bill-recording.spec.ts --project=chromium --workers=1",
+    "test:bill-recording:headed": "playwright test tests/billing/bill-recording.spec.ts --headed --project=chromium --workers=1",
+    "test:live": "playwright test --project=live-consultation --workers=1",
+    "test:live:headed": "playwright test --project=live-consultation --workers=1 --headed",
     "test:tibet-patient-registration-save": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --project=chromium",
     "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium"
   },
