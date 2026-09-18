@@ -285,7 +285,10 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                                     type: 'pending bills cleared',
                                     description:
                                         bills.length === 0
-                                            ? 'the centre was blocked but nothing was listed as pending'
+                                            ? 'the centre was blocked but there was nothing to ' +
+                                              'bill — either nothing was listed, or Create Bill ' +
+                                              'answered that there are no patients; the run ' +
+                                              'carried on either way'
                                             : bills
                                                   .map(
                                                       (bill) =>

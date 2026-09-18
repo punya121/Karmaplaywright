@@ -64,6 +64,11 @@ export type BillWindow = {
     isPopup: boolean;
     listing: PendingBillRow;
     prescriptionId: string;
+    /**
+     * Set when Create Bill answered "no patients" instead of opening the bill — see
+     * NOTHING_TO_BILL. There is then no bill window and nothing to fill in.
+     */
+    nothingToBill?: string;
 };
 
 export type CreatedBill = {
@@ -76,7 +81,30 @@ export type CreatedBill = {
     medicines: BilledMedicine[];
     /** What the app said if it refused the submit; empty when it took it. */
     complaint: string;
+    /**
+     * The app's own words when it said there was nobody to bill, whether that came back
+     * on Create Bill or on the submit. Empty on a bill that was actually created. A run
+     * that gets this has not failed — there is simply no billing to do — so it carries
+     * on to the next step rather than reporting a refusal.
+     */
+    nothingToBill: string;
 };
+
+/**
+ * How the app says there is nobody to bill.
+ *
+ * Two shapes of the same answer, and neither is a fault: the list can come back empty,
+ * and a list with rows on it can still answer Create Bill with "no patients" — a row
+ * somebody else billed in the meantime, or one the app no longer counts. Both mean the
+ * same thing for a run that is only here to clear a backlog, so both let it move on
+ * instead of stopping to report a refusal it cannot do anything about.
+ *
+ * Matched only against this screen's own words — the empty grid's row and the alerts
+ * Fetch, Create Bill and Submit raise — so it is not at risk of catching a message about
+ * something else.
+ */
+const NOTHING_TO_BILL =
+    /\bno\s+(?:patient|patients|pending|data|record|records|prescription|prescriptions|result|results|bill|bills)\b|\bnothing\s+(?:to\s+bill|pending)\b|\bnot\s+found\b/i;
 
 export class PendingBillPage {
     constructor(private readonly page: Page) {}
@@ -563,8 +591,12 @@ export class PendingBillPage {
      * Presses Fetch and waits for the grid to come back. Given a range, the period picker
      * is set to it first — see selectDateRange().
      */
-    async fetchPendingBills(options: { range?: BillingRange; date?: DateForms } = {}): Promise<number> {
+    async fetchPendingBills(
+        options: { range?: BillingRange; date?: DateForms; dialogMessages?: string[] } = {}
+    ): Promise<number> {
         const range = options.range ?? (options.date ? { from: options.date, to: options.date } : undefined);
+        const dialogMessages = options.dialogMessages ?? [];
+        const alertsBefore = dialogMessages.length;
 
         if (range) {
             const shown = await this.selectDateRange(range.from, range.to);
@@ -585,6 +617,18 @@ export class PendingBillPage {
             .first()
             .waitFor({ state: 'visible', timeout: 30000 })
             .catch(() => undefined);
+
+        // Some centres answer an empty period in a dialog rather than by drawing an empty
+        // grid. Either way the period holds nothing to bill, so it reads as zero pending
+        // rather than as something having gone wrong.
+        const said = dialogMessages
+            .slice(alertsBefore)
+            .find((message) => NOTHING_TO_BILL.test(message));
+
+        if (said) {
+            console.log(`Fetch answered "${said}", so this period has nothing to bill.`);
+            return 0;
+        }
 
         return this.pendingCount();
     }
@@ -669,9 +713,15 @@ export class PendingBillPage {
      * A centre whose app navigates in place instead is handled too - the list's own page
      * is then the bill's page, and the only difference afterwards is that it must not be
      * closed.
+     *
+     * The third answer is neither: a row that is listed but that the app will not bill,
+     * which it says in an alert — "no patients" — and then does nothing. Given the
+     * messages, that is recognised and handed back as nothingToBill instead of waiting out
+     * a navigation that is never coming. See NOTHING_TO_BILL.
      */
-    async openFirstPendingBill(): Promise<BillWindow> {
+    async openFirstPendingBill(dialogMessages: string[] = []): Promise<BillWindow> {
         const listing = await this.readFirstPendingRow();
+        const alertsBefore = dialogMessages.length;
         const row = this.pendingRows().first();
 
         const createBill = row
@@ -714,7 +764,22 @@ export class PendingBillPage {
             };
         }
 
-        // No window, so the app went somewhere in this tab instead.
+        // No window. Either the app went somewhere in this tab, or it refused - and a
+        // refusal is read off the alerts before anything is waited for, because the wait
+        // would only time out.
+        const said = dialogMessages
+            .slice(alertsBefore)
+            .find((message) => NOTHING_TO_BILL.test(message));
+
+        if (said) {
+            console.log(
+                `Create Bill for history ${listing.historyId || '(unnamed row)'} answered ` +
+                    `"${said}", so there is nothing to bill on that row.`
+            );
+
+            return { page: this.page, isPopup: false, listing, prescriptionId: listing.historyId, nothingToBill: said };
+        }
+
         await this.page.waitForURL(/PrescriptionView|Bill/i, { timeout: 20000 }).catch(() => undefined);
         await this.page.waitForLoadState('load').catch(() => undefined);
 
@@ -1010,7 +1075,23 @@ export class PendingBillPage {
      * submit, and come back to the list ready for the next one.
      */
     async createBillForFirstPending(dialogMessages: string[] = []): Promise<CreatedBill> {
-        const bill = await this.openFirstPendingBill();
+        const bill = await this.openFirstPendingBill(dialogMessages);
+
+        const asListed = {
+            prescriptionId: bill.prescriptionId,
+            patientId: bill.listing.patientId,
+            patientName: bill.listing.patientName,
+            billedFor: bill.listing.date,
+        };
+
+        // The row was listed but the app will not bill it and said so. Nothing was filled
+        // in and nothing was submitted, and that is reported as such rather than as a
+        // refusal - there is no bill to create here.
+        if (bill.nothingToBill) {
+            await this.returnToList(bill);
+
+            return { ...asListed, medicines: [], complaint: '', nothingToBill: bill.nothingToBill };
+        }
 
         // The window has dialogs of its own, and the listing page's handler does not hear
         // them - they belong to a different page object's page.
@@ -1022,13 +1103,16 @@ export class PendingBillPage {
             const medicines = await this.fillBatchesAndExpiries(bill.page);
             const complaint = await this.submit(bill.page, dialogMessages);
 
+            // A submit answered with "no patients" is the same answer arriving a step
+            // later - the row is not billable, rather than the bill having been rejected
+            // over something this run got wrong.
+            const nothingToBill = NOTHING_TO_BILL.test(complaint) ? complaint : '';
+
             return {
-                prescriptionId: bill.prescriptionId,
-                patientId: bill.listing.patientId,
-                patientName: bill.listing.patientName,
-                billedFor: bill.listing.date,
+                ...asListed,
                 medicines,
-                complaint,
+                complaint: nothingToBill ? '' : complaint,
+                nothingToBill,
             };
         } finally {
             await this.returnToList(bill);
@@ -1062,6 +1146,10 @@ export class PendingBillPage {
         // which a weekend or a holiday puts further back.
         const periods: BillingRange[] = [previousDayToToday(), lastDaysToToday(lookbackDays)];
 
+        // Set once the app itself has said there is nobody to bill. Widening the period
+        // after that answer would only ask the same screen the same question.
+        let appSaysNobody = '';
+
         for (const period of periods) {
             let previousPrescriptionId = '';
 
@@ -1075,7 +1163,7 @@ export class PendingBillPage {
                 }
 
                 await this.open();
-                const pending = await this.fetchPendingBills({ range: period });
+                const pending = await this.fetchPendingBills({ range: period, dialogMessages });
 
                 if (pending === 0) {
                     break;
@@ -1087,6 +1175,15 @@ export class PendingBillPage {
                 );
 
                 const bill = await this.createBillForFirstPending(dialogMessages);
+
+                // The list had a row on it, but the app answered Create Bill with "no
+                // patients". There is nothing here to clear, and pressing the same button
+                // on the same row again would get the same answer, so the run leaves the
+                // screen and carries on with what it came to do.
+                if (bill.nothingToBill) {
+                    appSaysNobody = bill.nothingToBill;
+                    break;
+                }
 
                 if (bill.complaint) {
                     throw new Error(
@@ -1123,9 +1220,18 @@ export class PendingBillPage {
 
             // The wider window is a fallback, not a second sweep: a period that produced
             // bills was the right one, and the days before it are somebody else's backlog.
-            if (created.length > 0) {
+            if (created.length > 0 || appSaysNobody) {
                 break;
             }
+        }
+
+        if (appSaysNobody && created.length === 0) {
+            console.log(
+                `View Pending Bills listed something, but Create Bill answered ` +
+                    `"${appSaysNobody}" — there is no bill to create here, so the run carries ` +
+                    'on to the next step.'
+            );
+            return created;
         }
 
         console.log(

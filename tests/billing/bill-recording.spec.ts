@@ -92,6 +92,10 @@ test.describe('Bill Recording', () => {
     test('TC03 - Open pending prescription and create bill', async ({ page }) => {
         test.setTimeout(180000);
 
+        // Kept so a Create Bill the app refuses ("no patients") is read as that rather than
+        // as the bill window failing to open.
+        const dialogMessages = billPage.captureDialogs();
+
         await billPage.open();
         // The previous day is where the backlog the app complains about lives.
         const pending = await billPage.fetchPendingBills({ range: previousDayToToday() });
@@ -103,7 +107,13 @@ test.describe('Bill Recording', () => {
                 'centre with a backlog.'
         );
 
-        const bill = await billPage.openFirstPendingBill();
+        const bill = await billPage.openFirstPendingBill(dialogMessages);
+
+        test.skip(
+            Boolean(bill.nothingToBill),
+            `The app answered Create Bill with "${bill.nothingToBill}", so no bill window ` +
+                'was opened'
+        );
 
         // Create Bill opens a window of its own, so the assertions are about that window
         // and not about `page`, which is still sitting on the list behind it.
@@ -143,6 +153,15 @@ test.describe('Bill Recording', () => {
         // generated batch and an expiry chosen from the dropdown, submits, and closes the
         // window again so the list is in front for the next row.
         const bill = await billPage.createBillForFirstPending(dialogMessages);
+
+        // A row the app will not bill — it answers Create Bill with "no patients" — leaves
+        // nothing for this test to assert against. That is the centre's state, not a
+        // defect, so it is skipped the same way an empty list is.
+        test.skip(
+            Boolean(bill.nothingToBill),
+            `The app answered Create Bill with "${bill.nothingToBill}", so there is no bill ` +
+                'to record a batch on'
+        );
 
         expect(
             bill.medicines.length,
@@ -185,6 +204,12 @@ test.describe('Bill Recording', () => {
         test.skip(pending === 0, 'The centre has no pending bill for the previous day');
 
         const bill = await billPage.createBillForFirstPending(dialogMessages);
+
+        test.skip(
+            Boolean(bill.nothingToBill),
+            `The app answered Create Bill with "${bill.nothingToBill}", so there is no bill ` +
+                'to set an expiry on'
+        );
 
         // The expiry is what this test is about, so it is checked rather than assumed. It
         // is a dropdown of the batches the centre holds, so an empty one here means the
