@@ -17,6 +17,7 @@ import { createConsultation } from '../data/consultations';
 import { createSavePatient } from '../data/patients';
 import { CaseHistoryPage } from '../pages/case-history.page';
 import { ConsentFormPage } from '../pages/consent-form.page';
+import { DoctorCallPage, type AnsweredCall } from '../pages/doctor-call.page';
 import { DoctorHomePage, type QueuedPatient } from '../pages/doctor-home.page';
 import { DoctorSelectionPage } from '../pages/doctor-selection.page';
 import { LoginPage } from '../pages/login.page';
@@ -57,7 +58,10 @@ function describePrescription(lines: MedicineLine[]): string {
  *                                                 doctor signs in, presses Check In
  *   reloads, picks the doctor, Saves
  *   the consultation is now ongoing              finds *that* patient in the queue,
- *   and this session stays signed in  <--------  takes them on, opens the consultation
+ *   and this session stays signed in  <--------  takes them on, opens the consultation,
+ *   is rung on CentreHome, clicks the             which rings the centre
+ *   "Click here" notification and joins
+ *   the doctor session it opens
  *   both sessions live at once, on the same consultation
  *
  * Why the second browser is opened at Doctor Selection rather than at the start: that
@@ -153,6 +157,7 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
         const caseHistoryPage = new CaseHistoryPage(page);
         const doctorSelection = new DoctorSelectionPage(page);
         const pendingBills = new PendingBillPage(page);
+        const doctorCall = new DoctorCallPage(page);
 
         // --- browser 2: built at Doctor Selection, not before ----------------------
         let doctorLogin!: LoginPage;
@@ -178,6 +183,8 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
         let assignedDoctor = '';
         let queued!: QueuedPatient;
         let joinedPrescriptionId = '';
+        /** The call the centre answered in browser 1, once the doctor has placed it. */
+        let answeredCall!: AnsweredCall;
 
         // What browser 2 writes into the form, and the alerts that session raises.
         // The dialogs are captured the moment the doctor's page exists, so a refused
@@ -567,6 +574,61 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                 },
             },
             {
+                module: 'Doctor Call',
+                title: 'Answer the doctor call notification in browser 1',
+                // The centre's half of the handover, and the half the spec used to skip.
+                // Saving Doctor Selection does not put the centre into the consultation -
+                // it only hands the visit over and drops browser 1 back on CentreHome.
+                // What puts them in is the doctor: opening the visit from their queue
+                // rings the centre, and the call arrives as a snackbar along the bottom of
+                // whatever page browser 1 is sitting on, with a "Click here" in it. Until
+                // somebody clicks that, the doctor is on the call alone.
+                //
+                // Which is why this runs here rather than straight after the Save. The
+                // notification is pushed to the open page by the doctor's own click, so a
+                // centre that started waiting at the Save would sit there through the
+                // doctor's sign-in, check-in and queue - browser 1 is untouched across all
+                // of it, so a call that did arrive early is still on screen now and is
+                // answered just the same.
+                //
+                // Nothing is reloaded before the wait on purpose: a reload throws the
+                // snackbar away, and the app does not raise it again for a call already
+                // placed.
+                run: async () => {
+                    answeredCall = await doctorCall.answerCall();
+
+                    // The session URL carries the consultation it belongs to -
+                    // /DoctorSession/<doctor>/<centre>/<prescription>/<call> - so the
+                    // centre is checked to have been rung into *this* run's visit rather
+                    // than into whichever call the centre was offered. Two runs against
+                    // the same centre at once is exactly when that matters.
+                    if (prescriptionId) {
+                        expect(
+                            answeredCall.sessionId,
+                            `The centre was rung into session ${answeredCall.sessionId}, which ` +
+                                `is not the prescription ${prescriptionId} it handed over`
+                        ).toContain(prescriptionId);
+                    }
+
+                    test.info().annotations.push({
+                        type: 'doctor call',
+                        description:
+                            `answered from the centre notification: session ` +
+                            `${answeredCall.sessionId || '(id not in the link)'}` +
+                            `${answeredCall.inPopup ? ', opened in its own window' : ''}` +
+                            `${
+                                answeredCall.controls.length > 0
+                                    ? `, offering ${answeredCall.controls.join(', ')}`
+                                    : ', with no call controls on screen'
+                            }`,
+                    });
+                    console.log(
+                        `Browser 1 answered ${assignedDoctor}'s call for ` +
+                            `${registered.displayId} and is on ${answeredCall.url}`
+                    );
+                },
+            },
+            {
                 module: 'Live Consultation',
                 title: 'Verify both sessions are live on the same consultation',
                 // The point of the whole spec, so it is checked rather than assumed: the
@@ -601,9 +663,18 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                         `Queue row ${queued.index + 1} is not ${registered.displayId}`
                     ).toContain(registered.displayId.toUpperCase());
 
+                    // The centre is in the call the doctor placed, on the session it was
+                    // rung into, while browser 2 has the consultation open - the two are
+                    // on it together rather than merely both signed in.
+                    await expect(
+                        answeredCall.page,
+                        'Browser 1 left the doctor session it answered the call into'
+                    ).toHaveURL(/DocCall\/DoctorSession/i);
+
                     // Browser 1 is asked to do something only a signed-in session can do,
                     // while browser 2 sits on the open consultation. Both being true at the
-                    // same moment is what "two live sessions" means here.
+                    // same moment is what "two live sessions" means here. It is the centre
+                    // leaving the call, which is why it comes after the check above.
                     await prescriptionPage.open();
                     const stillListed = await prescriptionPage.hasPrescriptionFor(registered);
 
@@ -622,7 +693,9 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                     test.info().annotations.push({
                         type: 'live sessions',
                         description:
-                            `browser 1 signed in as ${validUsername} on ${page.url()}; ` +
+                            `browser 1 signed in as ${validUsername} on ${page.url()}, ` +
+                            `after answering the call into session ` +
+                            `${answeredCall.sessionId || '(id not in the link)'}; ` +
                             `browser 2 signed in as ${doctorUsername} on ${doctor.url()}`,
                     });
                     console.log(
