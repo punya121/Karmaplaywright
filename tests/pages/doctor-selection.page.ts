@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test';
+import { guardAgainstStrayTabs } from './stray-tabs';
 
 /**
  * E2E_HOLD_OPEN=1 (with --headed) parks the run at page.pause() once the prescription
@@ -24,7 +25,7 @@ const holdOpen = !!process.env.E2E_HOLD_OPEN;
  *     being clicked three times. dismissTour() is called on both sides of the pick.
  */
 export class DoctorSelectionPage {
-    constructor(private readonly page: Page) {}
+    constructor(private page: Page) {}
 
     /** The doctor a run hands its prescription to, and their card id as a fallback. */
     static readonly defaultDoctor = process.env['E2E_DOCTOR_NAME'] || 'Dr. Demo';
@@ -138,12 +139,22 @@ export class DoctorSelectionPage {
      * Save commits the handover and the app returns to Search > Prescription (Centre),
      * so the run waits for that page rather than for any navigation — waiting here also
      * stops a logout teardown from cutting the handover short.
+     *
+     * Save also opens a tab of its own that has nothing to do with the handover: a Google
+     * Drive page, which comes up as Drive's own error page and takes the focus with it.
+     * That is not a failure of anything this run is testing, so the tab is closed and the
+     * run goes back to the tab it was on rather than reporting an error off a page that
+     * was never part of the flow. See guardAgainstStrayTabs().
      */
     async saveAndExpectPrescriptionCentre(): Promise<void> {
         await expect(
             this.saveButton(),
             'Doctor Selection has no "End the video call and save prescription" button'
         ).toBeVisible({ timeout: 15000 });
+
+        // Armed before the click: the tab opens while the click is still returning.
+        const releaseStrayTabs = guardAgainstStrayTabs(this.page);
+
         await this.saveButton().click();
 
         const arrived = await this.page
@@ -151,11 +162,38 @@ export class DoctorSelectionPage {
             .then(() => true)
             .catch(() => false);
 
-        if (!arrived) {
+        const strays = await releaseStrayTabs();
+
+        // The other way round: a centre whose app opens Prescription (Centre) in a tab of
+        // its own rather than navigating this one. That tab is the run's tab from here on,
+        // so it is adopted instead of being waited for on a page that is never going to
+        // move. Only the app's own pages are eligible - the strays are gone by now.
+        const inAnotherTab =
+            arrived
+                ? undefined
+                : this.page
+                      .context()
+                      .pages()
+                      .find((other) => other !== this.page && !other.isClosed() && /CentreHome/i.test(other.url()));
+
+        if (inAnotherTab) {
+            console.log(
+                `Save opened Prescription (Centre) in another tab (${inAnotherTab.url()}); the ` +
+                    'run switches to it and carries on there.'
+            );
+            await inAnotherTab.bringToFront().catch(() => undefined);
+            this.page = inAnotherTab;
+        }
+
+        if (!arrived && !inAnotherTab) {
             throw new Error(
                 `Save did not return to Prescription (Centre) — the run is still on ${this.page.url()}. ` +
                     `checkDocAllocation() re-checks the doctor's availability and only submits the form ` +
-                    `when that answers 1, so the prescription has not been handed over.`
+                    `when that answers 1, so the prescription has not been handed over.` +
+                    (strays.length > 0
+                        ? ` The app did open ${strays.length} tab(s) that are not part of the run ` +
+                          `(${strays.join(', ')}); those were closed and are not the reason.`
+                        : '')
             );
         }
 

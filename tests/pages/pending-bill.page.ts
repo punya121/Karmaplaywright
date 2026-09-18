@@ -751,6 +751,27 @@ export class PendingBillPage {
             await popup.waitForLoadState('load').catch(() => undefined);
             await popup.bringToFront().catch(() => undefined);
 
+            // The window opened, but not necessarily on a bill: with no patient behind the
+            // row the app puts Reconciliation up there instead, which has no medicine line
+            // on it and nothing for this run to record. That window is the app's answer,
+            // not a bill, so it is read as such and the run moves on.
+            const instead = await this.nothingToBillOn(popup, dialogMessages, alertsBefore);
+
+            if (instead) {
+                console.log(
+                    `Create Bill for history ${listing.historyId || '(unnamed row)'} opened ` +
+                        `${instead}, so there is nothing to bill on that row.`
+                );
+
+                return {
+                    page: popup,
+                    isPopup: true,
+                    listing,
+                    prescriptionId: listing.historyId,
+                    nothingToBill: instead,
+                };
+            }
+
             console.log(
                 `Create Bill opened a new window for history ${listing.historyId} ` +
                     `(patient ${listing.patientId}${listing.patientName ? `, ${listing.patientName}` : ''})`
@@ -780,15 +801,80 @@ export class PendingBillPage {
             return { page: this.page, isPopup: false, listing, prescriptionId: listing.historyId, nothingToBill: said };
         }
 
-        await this.page.waitForURL(/PrescriptionView|Bill/i, { timeout: 20000 }).catch(() => undefined);
+        await this.page
+            .waitForURL(/PrescriptionView|Bill|Reconcil/i, { timeout: 20000 })
+            .catch(() => undefined);
         await this.page.waitForLoadState('load').catch(() => undefined);
+
+        // The same check as for the window: a centre that navigates in place can land on
+        // Reconciliation here for exactly the same reason.
+        const insteadOfBill = await this.nothingToBillOn(this.page, dialogMessages, alertsBefore);
 
         return {
             page: this.page,
             isPopup: false,
             listing,
             prescriptionId: /[?&]id=(\d+)/i.exec(this.page.url())?.[1] || listing.historyId,
+            ...(insteadOfBill ? { nothingToBill: insteadOfBill } : {}),
         };
+    }
+
+    /**
+     * Whether what Create Bill put up is a bill at all, and if it is not, what it is — in
+     * the app's own words where it gave any.
+     *
+     * With no patient behind the row, Create Bill does not refuse in a dialog: it opens
+     * Reconciliation instead, which is a perfectly healthy page that simply has no
+     * medicine line on it. A run that took that for the bill would fill nothing in, submit
+     * nothing, and report that the batch field never appeared - which says nothing about
+     * what actually happened.
+     *
+     * The batch fields decide it. They are the one thing only a bill has, so a page
+     * carrying them is a bill whatever its URL says, and a page without them is judged on
+     * where it went and what it says. That order matters: a bill that is merely slow to
+     * render must not be written off as a reconciliation.
+     */
+    private async nothingToBillOn(
+        billPage: Page,
+        dialogMessages: string[] = [],
+        alertsBefore = dialogMessages.length
+    ): Promise<string> {
+        const hasBatchField = await this.batchFields(billPage)
+            .first()
+            .waitFor({ state: 'visible', timeout: 10000 })
+            .then(() => true)
+            .catch(() => false);
+
+        if (hasBatchField) {
+            return '';
+        }
+
+        const said = dialogMessages
+            .slice(alertsBefore)
+            .find((message) => NOTHING_TO_BILL.test(message));
+
+        if (said) {
+            return said;
+        }
+
+        if (/Reconcil/i.test(billPage.url())) {
+            return `Reconciliation (${billPage.url()}) rather than a bill`;
+        }
+
+        // Nothing in a dialog and nowhere telling, so the page's own words are the last
+        // place to look — the heading or an empty-grid row saying there is no patient.
+        const onPage = await billPage
+            .locator('body')
+            .innerText()
+            .then((text) => text.replace(/\s+/g, ' ').trim())
+            .catch(() => '');
+
+        const sentence = onPage
+            .split(/(?<=[.!?])\s+|\n+/)
+            .map((line) => line.trim())
+            .find((line) => line.length > 0 && line.length < 200 && NOTHING_TO_BILL.test(line));
+
+        return sentence ? `a page saying "${sentence}"` : '';
     }
 
     /**
