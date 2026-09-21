@@ -15,7 +15,7 @@
     "report:list": "node reporting/show-latest-report.js --list",
     "test:headed": "playwright test --headed",
     "test:login": "playwright test tests/auth/login.spec.ts --project=chromium",
-     "test:login:headed": "playwright test tests/auth/login.spec.ts --headed --project=chromium",
+    "test:login:headed": "playwright test tests/auth/login.spec.ts --headed --project=chromium",
     "test:login-negative": "playwright test tests/auth/login-negative.spec.ts --project=chromium",
     "test:patient-registration": "playwright test tests/patient/patient-registration.spec.ts --project=chromium",
     "test:patient-registration:headed": "playwright test tests/patient/patient-registration.spec.ts --headed --project=chromium",
@@ -38,7 +38,9 @@
     "test:live": "playwright test --project=live-consultation --workers=1",
     "test:live:headed": "playwright test --project=live-consultation --workers=1 --headed",
     "test:tibet-patient-registration-save": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --project=chromium",
-    "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium"
+    "test:tibet-patient-registration-save:headed": "playwright test tests/patient/tibet-patient-registration-save.spec.ts --headed --project=chromium",
+    "test:smile-registration": "playwright test tests/smile/smile-registration.spec.ts --project=chromium --workers=1",
+    "test:smile-registration:headed": "playwright test tests/smile/smile-registration.spec.ts --headed --project=chromium --workers=1"
   },
   "keywords": [],
   "author": "",

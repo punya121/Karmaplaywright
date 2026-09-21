@@ -26,3 +26,17 @@ export const baseUrl = process.env['E2E_BASE_URL'] || 'https://uat.karmaprimaryh
  */
 export const doctorUsername = process.env['E2E_DOCTOR_USERNAME'] || validUsername;
 export const doctorPassword = process.env['E2E_DOCTOR_PASSWORD'] || validPassword;
+
+/**
+ * The SMILE centre, whose Registration > Prescription screen registers a patient and
+ * writes their prescription on one form, then approves it on the summary it saves to.
+ * It is its own centre login - a different user to E2E_USERNAME - so it has keys of its
+ * own. Read lazily, so a .env without them only fails the SMILE spec, not every spec
+ * that imports this file.
+ */
+export function smileCredentials(): { username: string; password: string } {
+    return {
+        username: requiredEnvironmentVariable('E2E_SMILE_USERNAME'),
+        password: requiredEnvironmentVariable('E2E_SMILE_PASSWORD'),
+    };
+}

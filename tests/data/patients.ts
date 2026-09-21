@@ -73,7 +73,7 @@ const vitalBands: VitalBand[] = [
     },
 ];
 
-function vitalsForAge(ageYears: number) {
+export function vitalsForAge(ageYears: number) {
     const band =
         vitalBands.find((candidate) => ageYears <= candidate.upTo) ??
         vitalBands[vitalBands.length - 1];

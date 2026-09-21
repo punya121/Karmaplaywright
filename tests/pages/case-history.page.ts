@@ -204,6 +204,16 @@ export class CaseHistoryPage {
         const options = this.page
             .locator('.selectize-dropdown:visible .option')
             .filter({ hasText: optionFilter });
+
+        // Selectize opens on mousedown, which a scripted click never sends, so where the
+        // list did not come up the control's wrapper gets a real click instead.
+        if (!(await isVisibleWithin(options.first(), 3000))) {
+            await input
+                .locator('xpath=ancestor::div[contains(@class,"selectize-control")][1]')
+                .click()
+                .catch(() => undefined);
+        }
+
         await expect(options.first()).toBeVisible({ timeout: 10000 });
 
         // Click by index rather than re-finding the option by its text: selectize
@@ -522,7 +532,9 @@ export class CaseHistoryPage {
     async recordVitals(caseHistory: PatientCaseHistoryData): Promise<void> {
         const page = this.page;
 
-        await page.locator('#weight').fill(caseHistory.weight);
+        // By name: a form in quirks mode matches ids case-blind, so #weight also finds the
+        // ANC/PNC sections' hidden id="Weight" boxes on the centre's prescription form.
+        await page.locator('input[name="weight"]').fill(caseHistory.weight);
         await page.locator('#height').fill(caseHistory.height);
         await page.locator('#high_bp').fill(caseHistory.highBp);
         await page.locator('#low_bp').fill(caseHistory.lowBp);
@@ -661,10 +673,12 @@ export class CaseHistoryPage {
     }
 
     private testRows(): Locator {
+        // Anchored on the Normal Value box every test row carries. The Refused checkbox
+        // was the anchor once, but the centre's prescription form hides it.
         return this.page
             .getByRole('group', { name: 'Point of care test' })
             .getByRole('row')
-            .filter({ has: this.page.getByRole('checkbox') });
+            .filter({ has: this.page.locator('[id^="inputTestNormalValue"]') });
     }
 
     async addTests(count: number, min: number, max: number): Promise<string[]> {
@@ -715,7 +729,14 @@ export class CaseHistoryPage {
             results.push(result);
 
             if (index < count - 1) {
-                await page.getByRole('button', { name: 'Add a test' }).click();
+                // #AddRangeTest is the PoC grid's own button. The centre's prescription
+                // form also has a diagnostics grid whose button reads "Add a test" too,
+                // so the wording alone matches two buttons there.
+                await page
+                    .locator('#AddRangeTest')
+                    .or(page.getByRole('button', { name: 'Add a test' }))
+                    .first()
+                    .click();
             }
         }
 

@@ -138,9 +138,15 @@ export class PrescriptionFormPage {
         return messages;
     }
 
+    /**
+     * The doctor's form words its submit for the video call; the centre's own
+     * Registration > Prescription form (the SMILE centre's) has no call and labels the
+     * same submit plain "Save". Both are <input id="SavePrescription" name="Next">.
+     */
     private saveButton(): Locator {
         return this.page
             .getByRole('button', { name: /end the video call and save prescription/i })
+            .or(this.page.locator('#SavePrescription'))
             .first();
     }
 
@@ -491,26 +497,37 @@ export class PrescriptionFormPage {
         consultation: ConsultationData,
         alreadyPrescribed: string[]
     ): Promise<MedicineLine | null> {
-        const category = await pickRandomOption(
-            this.page,
-            this.rowControl(row, /category/i, '.selectize-control.single'),
-            { timeout: 10000 }
-        );
+        // A category can be empty at a centre - nothing of that kind on its formulary - so
+        // an empty medicine list sends the run back for another category rather than
+        // ending the prescription there.
+        const triedCategories: string[] = [];
+        let category: string | null = null;
+        let medicine: string | null = null;
 
-        if (category === null) {
-            return null;
+        for (let attempt = 0; attempt < 5 && medicine === null; attempt += 1) {
+            category = await pickRandomOption(
+                this.page,
+                this.rowControl(row, /category/i, '.selectize-control.single'),
+                { exclude: triedCategories, timeout: 10000 }
+            );
+
+            if (category === null) {
+                return null;
+            }
+
+            triedCategories.push(category);
+
+            // The list the category just filtered needs a moment to come back before it opens.
+            await this.page.waitForTimeout(500);
+
+            medicine = await pickRandomOption(
+                this.page,
+                row.locator('.selectize-control.medicine_list').first(),
+                { exclude: alreadyPrescribed, timeout: 10000 }
+            );
         }
 
-        // The list the category just filtered needs a moment to come back before it opens.
-        await this.page.waitForTimeout(500);
-
-        const medicine = await pickRandomOption(
-            this.page,
-            row.locator('.selectize-control.medicine_list').first(),
-            { exclude: alreadyPrescribed, timeout: 10000 }
-        );
-
-        if (medicine === null) {
+        if (category === null || medicine === null) {
             return null;
         }
 
@@ -574,8 +591,11 @@ export class PrescriptionFormPage {
      * #AddTest. The grid opens with one row on it, so the button is pressed between rows
      * rather than before the first — and only once the row count confirms the previous
      * one landed, since the grid re-renders as it grows.
+     *
+     * `filter` narrows the picks to part of the catalogue — the SMILE centre orders from
+     * its own "[SMILE] ..." tests.
      */
-    async addDiagnosticTests(count: number): Promise<string[]> {
+    async addDiagnosticTests(count: number, filter?: RegExp): Promise<string[]> {
         const tests: string[] = [];
 
         if (!(await isVisibleWithin(this.diagnosticRows().first(), 5000))) {
@@ -597,7 +617,7 @@ export class PrescriptionFormPage {
             const test = await pickRandomOption(
                 this.page,
                 row.locator('.selectize-control').first(),
-                { exclude: [...alreadyOrdered, ...tests], timeout: 10000 }
+                { filter, exclude: [...alreadyOrdered, ...tests], timeout: 10000 }
             );
 
             if (test === null) {
