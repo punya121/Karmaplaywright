@@ -109,12 +109,17 @@ export class SmilePrescriptionPage {
      * Fills every section, top to bottom, each as its own module case so the report has
      * a row per section. See tests/support/module-case.ts.
      */
-    async fill(data: SmilePrescriptionData): Promise<SmilePrescriptionSummary> {
+    async fill(
+        data: SmilePrescriptionData,
+        options: { skipAadhaar?: boolean } = {}
+    ): Promise<SmilePrescriptionSummary> {
         const module = 'SMILE Prescription';
         const { patient, caseHistory, consultation, female } = data;
 
-        await moduleCase(module, 'Enter the patient details', () =>
-            this.fillPatientDetails(patient)
+        await moduleCase(
+            module,
+            options.skipAadhaar ? 'Enter the patient details, leaving Aadhaar blank' : 'Enter the patient details',
+            () => this.fillPatientDetails(patient, options)
         );
         const village = await moduleCase(module, 'Pick the village', () => this.selectVillage());
 
@@ -192,7 +197,10 @@ export class SmilePrescriptionPage {
         };
     }
 
-    async fillPatientDetails(patient: PatientRegistrationData): Promise<void> {
+    async fillPatientDetails(
+        patient: PatientRegistrationData,
+        options: { skipAadhaar?: boolean } = {}
+    ): Promise<void> {
         const page = this.page;
 
         await page.locator('#patient_name').fill(patient.name);
@@ -213,7 +221,9 @@ export class SmilePrescriptionPage {
 
         await this.checkRadio(page.locator(patient.married ? '#marriedy' : '#marriedn'));
         await page.locator('#mobile').fill(patient.mobile);
-        await this.fillAadhaar(patient.aadhaar);
+        if (!options.skipAadhaar) {
+            await this.fillAadhaar(patient.aadhaar);
+        }
     }
 
     /**
@@ -221,7 +231,7 @@ export class SmilePrescriptionPage {
      * field that only its input handler writes, so it has to be typed; on blur it asks
      * the server whether the number already belongs to someone else.
      */
-    private async fillAadhaar(aadhaar: string): Promise<void> {
+    async fillAadhaar(aadhaar: string): Promise<void> {
         const field = this.page.locator('#patient_aadhaar');
         await field.click();
         await field.fill('');
@@ -617,6 +627,54 @@ export class SmilePrescriptionPage {
     /** See PrescriptionFormPage.saveAndExpectLeavingForm(). Lands on PrescriptionView. */
     async save(dialogMessages: string[]) {
         return this.prescription.saveAndExpectLeavingForm(dialogMessages);
+    }
+
+    /**
+     * Presses Save with the Aadhaar box left blank and reports what the form made of it.
+     * The form can refuse in three ways - an alert() (answered by captureDialogs()), the
+     * red #aadhaar_error message under the box, or the browser's own required-field check
+     * - and any of them comes back as the refusal's text. A form that takes the save
+     * without an Aadhaar comes back as null, already on PrescriptionView.
+     */
+    async saveWithoutAadhaar(dialogMessages: string[]): Promise<string | null> {
+        const page = this.page;
+        const formUrl = page.url();
+        const alertsBefore = dialogMessages.length;
+        const aadhaar = page.locator('#patient_aadhaar');
+        const inlineError = page.locator('#aadhaar_error').filter({ visible: true, hasText: /\S/ });
+
+        // Same required tickbox saveAndExpectLeavingForm() ticks before its own submit.
+        const declaration = page.locator('input[type="checkbox"]:required').first();
+        if (await declaration.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await declaration.check({ force: true }).catch(() => undefined);
+        }
+
+        await page.locator('#SavePrescription').click();
+
+        const deadline = Date.now() + 20000;
+        for (;;) {
+            if (dialogMessages.length > alertsBefore) {
+                return dialogMessages.slice(alertsBefore).join(' / ');
+            }
+            if (page.url() !== formUrl) {
+                await page.waitForLoadState('load');
+                return null;
+            }
+            if (await inlineError.count()) {
+                return (await inlineError.first().innerText()).trim();
+            }
+            const invalid = await aadhaar
+                .evaluate((field: HTMLInputElement) => (field.validity.valid ? '' : field.validationMessage))
+                .catch(() => '');
+            if (invalid) {
+                return invalid;
+            }
+            if (Date.now() >= deadline) {
+                // Still on the form with nothing said: the submit was cancelled quietly.
+                return 'Save stayed on the form with no message';
+            }
+            await page.waitForTimeout(250);
+        }
     }
 
     /** The prescription id the save landed on, from PrescriptionView?id=<id>. */
