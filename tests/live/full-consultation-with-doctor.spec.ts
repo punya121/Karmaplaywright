@@ -29,6 +29,7 @@ import {
     type MedicineLine,
 } from '../pages/prescription-form.page';
 import { PrescriptionSearchPage } from '../pages/prescription-search.page';
+import { ReconciliationPage } from '../pages/reconciliation.page';
 import { RegistrationPage } from '../pages/registration.page';
 import { runModuleCases } from '../support/module-case';
 
@@ -157,6 +158,7 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
         const caseHistoryPage = new CaseHistoryPage(page);
         const doctorSelection = new DoctorSelectionPage(page);
         const pendingBills = new PendingBillPage(page);
+        const reconciliation = new ReconciliationPage(page);
         const doctorCall = new DoctorCallPage(page);
 
         // --- browser 2: built at Doctor Selection, not before ----------------------
@@ -265,10 +267,11 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                         // See openCaseHistoryFromPatientForm().
                         await searchPage.openCaseHistoryFromPatientForm(dialogMessages, {
                             // The app refuses to start any case history while the centre
-                            // has the previous day's bills outstanding, and says so. That
-                            // is a real backlog, not a glitch, so the run clears it the way
-                            // the pharmacy would — Bill > View Pending Bills, batch and
-                            // expiry per medicine — and comes back. E2E_AUTO_CLEAR_
+                            // has the previous day's reconciliations and bills outstanding,
+                            // and says so. That is a real backlog, not a glitch, so the run
+                            // clears it the way the centre would — Reconciliation, Save per
+                            // patient; then Bill > View Pending Bills, batch and expiry per
+                            // medicine — and comes back. E2E_AUTO_CLEAR_
                             // PENDING_BILLS=0 turns that off and leaves the refusal to be
                             // reported instead.
                             onCentreBlocked: async (message) => {
@@ -278,6 +281,29 @@ test.describe('Live consultation: the patient holds it open while a doctor joins
                                             `clear it (E2E_AUTO_CLEAR_PENDING_BILLS=0): ${message}`
                                     );
                                 }
+
+                                // Reconciliation first: Reconciliation > Reconciliation,
+                                // From/To on the previous day through today, Search, then
+                                // Save on every patient row still waiting.
+                                const reconciled = await reconciliation.reconcilePending({
+                                    dialogMessages,
+                                });
+
+                                test.info().annotations.push({
+                                    type: 'reconciliations saved',
+                                    description:
+                                        `${reconciled.period || '(no period)'}: ` +
+                                        (reconciled.saved.length === 0
+                                            ? 'nothing was waiting'
+                                            : reconciled.saved
+                                                  .map((row) => `${row.patientName} (${row.rowId})`)
+                                                  .join(', ')) +
+                                        (reconciled.refused.length
+                                            ? ` | refused by the app: ${reconciled.refused
+                                                  .map((row) => `${row.patientName}: ${row.reason}`)
+                                                  .join('; ')}`
+                                            : ''),
+                                });
 
                                 const bills = await pendingBills.clearPendingBills();
 
