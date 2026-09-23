@@ -1,11 +1,25 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { baseUrl } from '../config/test-env';
 import type { TibetPatientRegistrationData } from '../data/tibet-patients';
+import { isVisibleWithin, pickRandomOption } from './selectize';
 
 export type FillTibetPatientOptions = {
     fillAadhaar: boolean;
 };
 
+/**
+ * /TibetPatientForm - the Tibetan Telemedicine Services registration form. It is this
+ * centre's own screen rather than the shared /PatientForm: it asks for a Green Book and
+ * a Destitute (Nyamthak) number, its occupation list is a selectize, and it saves to
+ * /TibetPatientSearch.
+ *
+ * Its submit buttons go to different places. "Save" writes the patient and lands on the
+ * search list; "Add Case History" opens that patient's case history
+ * (/TibetPrescriptionHistoryForm) - but only for a patient who has already been saved.
+ * Pressed on an unsaved form it does nothing but raise the app's own red banner, "Save
+ * the patient details before adding a prescription", which is why a run saves first and
+ * comes back to the record by id.
+ */
 export class TibetRegistrationPage {
     constructor(private readonly page: Page) {}
 
@@ -24,6 +38,11 @@ export class TibetRegistrationPage {
         }
 
         await expect(this.page.locator('#patient_name')).toBeVisible({ timeout: 15000 });
+
+        // The form binds its own handlers on document ready - the age rows stay hidden
+        // until the Age Input Type radio is clicked - and a radio checked before that
+        // binding runs is reset under the run. See checkRadio().
+        await this.page.waitForLoadState('load');
     }
 
     async isAadhaarRequired(): Promise<boolean> {
@@ -40,49 +59,105 @@ export class TibetRegistrationPage {
         return style !== null && !/display:\s*none/i.test(style);
     }
 
-    private async fillAge(age: string, ageUnit: TibetPatientRegistrationData['ageUnit']): Promise<void> {
-        await this.page.locator('#age_years').check({ force: true });
+    /**
+     * Checks a radio and keeps at it until the page lets it stay checked.
+     *
+     * One check() is not enough on this form. The radios carry the page's own click
+     * handlers - the Age Input Type pair shows and hides whole rows - and a click that
+     * lands while those handlers are still being bound leaves the radio unchecked with
+     * nothing on screen to say so. Playwright reports it as "Clicking the checkbox did
+     * not change its state", which is true and says nothing about why.
+     */
+    private async checkRadio(radio: Locator): Promise<void> {
+        await expect(async () => {
+            await radio.check({ force: true, timeout: 2000 });
+            await expect(radio).toBeChecked({ timeout: 1000 });
+        }).toPass({ timeout: 15000 });
+    }
+
+    /**
+     * Age is asked for either as a date of birth or as a number of years, and the row
+     * holding the number is hidden until "Age in Years" is picked - so the input type
+     * comes first, then the unit, then the figure itself.
+     */
+    private async fillAge(
+        age: string,
+        ageUnit: TibetPatientRegistrationData['ageUnit']
+    ): Promise<void> {
+        await this.checkRadio(this.page.locator('#age_years'));
 
         const unitControl =
-            ageUnit === 'Months' ? this.page.locator('#age_unit_month') : this.page.locator('#age_unit_years');
-        await unitControl.check({ force: true });
+            ageUnit === 'Months'
+                ? this.page.locator('#age_unit_month')
+                : this.page.locator('#age_unit_years');
+        await this.checkRadio(unitControl);
 
         await this.page.locator('#patient_age').fill(age);
     }
 
     private async fillGender(gender: TibetPatientRegistrationData['gender']): Promise<void> {
-        await this.page.locator(`input[name="sex"][value="${gender}"]`).check({ force: true });
+        await this.checkRadio(this.page.locator(`input[name="sex"][value="${gender}"]`));
     }
 
-    private async fillMaritalStatus(maritalStatus: TibetPatientRegistrationData['maritalStatus']): Promise<void> {
+    private async fillMaritalStatus(
+        maritalStatus: TibetPatientRegistrationData['maritalStatus']
+    ): Promise<void> {
         const valueMap: Record<TibetPatientRegistrationData['maritalStatus'], string> = {
             Married: '1',
             NotMarried: '0',
             Others: '2',
         };
 
-        await this.page
-            .locator(`input[name="isMarried"][value="${valueMap[maritalStatus]}"]`)
-            .check({ force: true });
+        await this.checkRadio(
+            this.page.locator(`input[name="isMarried"][value="${valueMap[maritalStatus]}"]`)
+        );
     }
 
-    private async fillOccupation(occupation: string): Promise<void> {
+    /**
+     * Occupation is a selectize on this centre's build - the <select> behind it is
+     * display:none, so selectOption() has nothing to click. The wanted occupation is
+     * taken where the centre offers it and any other where it does not, so a run is not
+     * tied to a list that only exists in one environment.
+     */
+    private async fillOccupation(occupation: string): Promise<string> {
+        const control = this.page.getByRole('textbox', { name: '--Select an Occupation--' });
+
+        if (await isVisibleWithin(control, 3000)) {
+            const picked =
+                (await pickRandomOption(this.page, control, {
+                    filter: new RegExp(`^\\s*${occupation}\\s*$`, 'i'),
+                })) ?? (await pickRandomOption(this.page, control));
+
+            expect(picked, 'The occupation list offered nothing to pick').not.toBeNull();
+            return picked as string;
+        }
+
+        // A build that renders it as a plain <select>.
         await this.page.locator('#occupation').selectOption({ label: occupation });
+        return occupation;
     }
 
     private async fillNationality(nationality: string): Promise<void> {
-        await this.page.locator('#nationalitySelect').selectOption({ label: nationality }).catch(async () => {
-            await this.page.locator('#nationalitySelect').selectOption('Others');
-            await this.page.locator('#nationality').fill(nationality);
-        });
+        await this.page
+            .locator('#nationalitySelect')
+            .selectOption({ label: nationality })
+            .catch(async () => {
+                await this.page.locator('#nationalitySelect').selectOption('Others');
+                await this.page.locator('#nationality').fill(nationality);
+            });
     }
 
-    async fillPatient(data: TibetPatientRegistrationData, options: FillTibetPatientOptions): Promise<void> {
+    async fillPatient(
+        data: TibetPatientRegistrationData,
+        options: FillTibetPatientOptions
+    ): Promise<void> {
         await this.page.locator('#patient_name').fill(data.name);
         await this.page.locator('#parent').fill(data.parent);
         await this.fillAge(data.age, data.ageUnit);
         await this.fillGender(data.gender);
         await this.fillMaritalStatus(data.maritalStatus);
+        await this.page.locator('#gbn').fill(data.greenBookNumber);
+        await this.page.locator('#nyamthak').fill(data.nyamthakNumber);
         await this.fillOccupation(data.occupation);
         await this.page.locator('#landmark').fill(data.landmark);
         await this.fillNationality(data.nationality);
@@ -119,6 +194,52 @@ export class TibetRegistrationPage {
 
     async expectSaved(): Promise<void> {
         await expect(this.page).toHaveURL(/PatientSearch/i, { timeout: 15000 });
+    }
+
+    /**
+     * Presses "Add Case History" on a saved patient's record and does not come back
+     * until /TibetPrescriptionHistoryForm is genuinely open.
+     *
+     * The button is the registration form's own submit, so a record the browser will not
+     * validate - or one that was never saved - leaves the run on /TibetPatientForm with
+     * only the app's red banner to say why. That banner is read back here rather than
+     * left to surface minutes later as a timeout on a vitals box.
+     */
+    async openCaseHistory(): Promise<void> {
+        const page = this.page;
+
+        await page.getByRole('button', { name: 'Add Case History' }).click();
+
+        const opened = await page
+            .waitForURL(/TibetPrescriptionHistoryForm/i, { timeout: 30000 })
+            .then(() => true)
+            .catch(() => false);
+
+        if (opened) {
+            await page.waitForLoadState('load');
+            return;
+        }
+
+        const complaint = await page.evaluate(() => {
+            const banner = Array.from(
+                document.querySelectorAll<HTMLElement>('.snackbar, #snackbar, [role="alert"]')
+            ).find((element) => element.offsetParent !== null && element.innerText.trim());
+            if (banner) {
+                return banner.innerText.replace(/\s+/g, ' ').trim();
+            }
+
+            const invalid = document.querySelector<
+                HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+            >('input:invalid, select:invalid, textarea:invalid');
+            return invalid
+                ? `${invalid.name || invalid.id || invalid.tagName} is invalid: ${invalid.validationMessage}`
+                : null;
+        });
+
+        throw new Error(
+            `"Add Case History" did not open the case history - the run is still on ${page.url()}. ` +
+                (complaint ?? 'The page gave no reason for refusing.')
+        );
     }
 
     async expectAadhaarRequiredError(): Promise<void> {

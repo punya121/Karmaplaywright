@@ -71,6 +71,8 @@ export type ConsultationSummary = {
     diagnosticTests: string[];
     referral: string | null;
     reviewDate: string | null;
+    /** What the Tibet form's required audio/video rating was answered with; null elsewhere. */
+    callQuality: string | null;
 };
 
 /**
@@ -207,6 +209,12 @@ export class PrescriptionFormPage {
         // run, not only on the ones that also refer the patient on.
         const reviewDate = await moduleCase(form, 'Set the review date', () => this.setReviewDate());
 
+        // Only the Tibet build asks this, and there it is required, so a form that does
+        // not carry it reports nothing rather than failing. See rateCallQuality().
+        const callQuality = await moduleCase(form, 'Rate the audio / video quality', () =>
+            this.rateCallQuality()
+        );
+
         // A blank symptom row anywhere on the grid fails the whole submit, so the form is
         // swept before it is handed back to be saved - a row this run could not fill, or
         // one the consultation came back with.
@@ -221,7 +229,65 @@ export class PrescriptionFormPage {
             diagnosticTests,
             referral,
             reviewDate,
+            callQuality,
         };
+    }
+
+    /**
+     * "Please rate the audio / video quality of the consultation", which only the Tibet
+     * build of this form asks - and asks as a required radio, so leaving it is the whole
+     * save: the browser blocks the submit with "callQuality is invalid: Please select one
+     * of these options" and the consultation is never written. A form without the section
+     * answers null and nothing else changes, which is how the other centres run through
+     * here untouched.
+     *
+     * Rated at random from what the form offers rather than pinned to Good, so a run is
+     * not the only kind of feedback the environment ever sees.
+     */
+    async rateCallQuality(): Promise<string | null> {
+        const options = this.page.locator('input[name="callQuality"]');
+
+        if ((await options.count()) === 0) {
+            return null;
+        }
+
+        const chosen = options.nth(randomInt(0, (await options.count()) - 1));
+
+        // The click is tried first, because that is what a doctor does. It does not
+        // always take: the rating sits at the foot of a form whose own panels are drawn
+        // over it, and a click Playwright forces through goes to whatever is on top,
+        // leaving the radio unchecked and reported only as "Clicking the checkbox did not
+        // change its state". So the value is set directly when the click will not stick,
+        // and the events the form listens for are raised by hand - a radio set that way
+        // is what both the form's handlers and the browser's own validation read.
+        const clicked = await chosen
+            .check({ force: true, timeout: 5000 })
+            .then(() => true)
+            .catch(() => false);
+
+        if (!clicked || !(await chosen.isChecked().catch(() => false))) {
+            await chosen.evaluate((radio) => {
+                if (radio instanceof HTMLInputElement) {
+                    radio.checked = true;
+                    radio.dispatchEvent(new Event('click', { bubbles: true }));
+                    radio.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            });
+        }
+
+        await expect(
+            chosen,
+            'The audio / video quality rating would not take, so the save will be blocked by ' +
+                'the browser with "callQuality is invalid: Please select one of these options"'
+        ).toBeChecked({ timeout: 5000 });
+
+        // The label is the text beside the radio rather than anything the input carries,
+        // so it is read off the row for the report.
+        const rating = await chosen
+            .evaluate((radio) => (radio.nextSibling?.textContent ?? '').replace(/\s+/g, ' ').trim())
+            .catch(() => '');
+
+        return rating || (await chosen.getAttribute('id')) || 'rated';
     }
 
     /**

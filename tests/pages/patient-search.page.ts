@@ -21,14 +21,36 @@ export type IdentifiedPatient = {
 };
 
 /**
+ * Which screens this centre keeps its patients on. Every centre's list is the same grid
+ * — same columns, same filter boxes, same Name link carrying the id — but the Tibet
+ * centre serves it from /TibetPatientSearch and its records from /TibetPatientForm, so
+ * the two paths are the only thing a run has to say. See TibetRegistrationPage.
+ */
+export type PatientSearchPaths = {
+    /** The list itself. Default: /PatientSearch. */
+    searchPath?: string;
+    /** A patient's own record, opened as <patientFormPath>?id=<numeric id>. */
+    patientFormPath?: string;
+};
+
+/**
  * Patient Search — the list of patients already registered at this centre. Used to
  * add a case history to an existing record rather than registering a new one.
  */
 export class PatientSearchPage {
-    constructor(private readonly page: Page) {}
+    private readonly searchPath: string;
+    private readonly patientFormPath: string;
+
+    constructor(
+        private readonly page: Page,
+        paths: PatientSearchPaths = {}
+    ) {
+        this.searchPath = paths.searchPath ?? '/PatientSearch';
+        this.patientFormPath = paths.patientFormPath ?? '/PatientForm';
+    }
 
     async open(): Promise<void> {
-        await this.page.goto(`${baseUrl.replace(/\/$/, '')}/PatientSearch`);
+        await this.page.goto(`${baseUrl.replace(/\/$/, '')}${this.searchPath}`);
         await this.page.waitForLoadState('load');
         await expect(this.page.getByRole('link', { name: 'Home' })).toBeVisible({
             timeout: 15000,
@@ -289,7 +311,9 @@ export class PatientSearchPage {
      * carries "Add Case History" for a patient already on file.
      */
     async openPatientForm(patient: IdentifiedPatient): Promise<void> {
-        await this.page.goto(`${baseUrl.replace(/\/$/, '')}/PatientForm?id=${patient.numericId}`);
+        await this.page.goto(
+            `${baseUrl.replace(/\/$/, '')}${this.patientFormPath}?id=${patient.numericId}`
+        );
         await expect(this.page.locator('#patient_name')).toHaveValue(patient.name, {
             timeout: 15000,
         });

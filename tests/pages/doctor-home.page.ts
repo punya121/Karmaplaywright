@@ -513,9 +513,7 @@ export class DoctorHomePage {
                 `The queue did not open prescription ${queuedId} on its own; ` +
                     'opening the form directly'
             );
-            await this.page.goto(
-                `${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${queuedId}`
-            );
+            await this.openPrescriptionFormUrl(queuedId);
         }
 
         await this.page.waitForLoadState('load').catch(() => undefined);
@@ -591,9 +589,7 @@ export class DoctorHomePage {
                 `The patient summary for prescription ${summaryId} offers no video call ` +
                     'button; opening the form directly'
             );
-            await this.page.goto(
-                `${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${summaryId}`
-            );
+            await this.openPrescriptionFormUrl(summaryId);
             return;
         }
 
@@ -636,9 +632,30 @@ export class DoctorHomePage {
                 `${prescriptionId || '(no id in the summary URL)'}; opening the form directly`
         );
 
-        await this.page.goto(
-            `${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${prescriptionId}`
-        );
+        await this.openPrescriptionFormUrl(prescriptionId);
+    }
+
+    /**
+     * Opens a consultation's form by its URL - the same plain GET the summary's own
+     * button makes, and what every fallback above falls back to.
+     *
+     * A Tibet visit does not stay on /PrescriptionForm. The page redirects itself to
+     * /TibetPrescriptionForm?id=<the same id> as it loads, and a goto whose load is cut
+     * short by the page's own redirect is reported as "Navigation to ... is interrupted
+     * by another navigation" - which is the app working, not a failure to arrive. So the
+     * interruption is allowed through and where the browser actually ended up is left to
+     * the caller's own check, which is a /PrescriptionForm/i either way.
+     */
+    private async openPrescriptionFormUrl(prescriptionId: string): Promise<void> {
+        await this.page
+            .goto(`${baseUrl.replace(/\/$/, '')}/PrescriptionForm?id=${prescriptionId}`)
+            .catch((error: Error) => {
+                if (!/interrupted by another navigation/i.test(error.message)) {
+                    throw error;
+                }
+            });
+
+        await this.page.waitForLoadState('load').catch(() => undefined);
     }
 
     /**

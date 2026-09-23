@@ -12,10 +12,23 @@ import type { IdentifiedPatient } from './patient-search.page';
  * run reaches the form either way.
  */
 export class PrescriptionSearchPage {
-    constructor(private readonly page: Page) {}
+    private readonly path: string;
+
+    /**
+     * `path` is the centre's own prescription list. It is the same grid everywhere - the
+     * same Patient Id column, the same doctor icon carrying a DoctorSelection link - but
+     * the Tibet centre serves it from /TibetCentreHome, so that is the one thing a run
+     * against it has to say.
+     */
+    constructor(
+        private readonly page: Page,
+        options: { path?: string } = {}
+    ) {
+        this.path = options.path ?? '/CentreHome';
+    }
 
     async open(): Promise<void> {
-        await this.page.goto(`${baseUrl.replace(/\/$/, '')}/CentreHome`);
+        await this.page.goto(`${baseUrl.replace(/\/$/, '')}${this.path}`);
         await this.page.waitForLoadState('load');
         await expect(this.page.getByRole('link', { name: 'Home' })).toBeVisible({
             timeout: 15000,

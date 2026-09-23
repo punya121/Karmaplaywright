@@ -34,6 +34,39 @@ export const doctorPassword = process.env['E2E_DOCTOR_PASSWORD'] || validPasswor
  * own. Read lazily, so a .env without them only fails the SMILE spec, not every spec
  * that imports this file.
  */
+/**
+ * The Tibet centre (Tibetan Telemedicine Services), whose screens are its own -
+ * /TibetPatientForm, /TibetPrescriptionHistoryForm, /TibetCentreHome - rather than the
+ * shared ones. It is a different login to E2E_USERNAME, so it has keys of its own, read
+ * lazily so a .env without them only fails the Tibet specs.
+ */
+export function tibetCredentials(): { username: string; password: string } {
+    return {
+        username: requiredEnvironmentVariable('E2E_TIBET_USERNAME'),
+        password: requiredEnvironmentVariable('E2E_TIBET_PASSWORD'),
+    };
+}
+
+/**
+ * The doctor the Tibet handover is made to, and the account that brings them on duty.
+ *
+ * A doctor who is not checked in cannot be assigned: Doctor Selection asks
+ * GetAvailability_of_Doctor about the doctor being picked and swallows the click when
+ * the answer is 0, so the Tibet runs check their doctor in the way the main consultation
+ * flow does.
+ *
+ * The Tibet centre's Doctor Selection lists one doctor, and on UAT it is the same
+ * account the other centres use - which is why these fall back to the doctor keys rather
+ * than being required. Set the E2E_TIBET_DOCTOR_* keys where that stops being true.
+ */
+export function tibetDoctor(): { name: string; username: string; password: string } {
+    return {
+        name: process.env['E2E_TIBET_DOCTOR_NAME'] || process.env['E2E_DOCTOR_NAME'] || 'Dr. Demo',
+        username: process.env['E2E_TIBET_DOCTOR_USERNAME'] || doctorUsername,
+        password: process.env['E2E_TIBET_DOCTOR_PASSWORD'] || doctorPassword,
+    };
+}
+
 export function smileCredentials(): { username: string; password: string } {
     return {
         username: requiredEnvironmentVariable('E2E_SMILE_USERNAME'),

@@ -21,6 +21,17 @@ const slowMo = process.env.E2E_SLOW_MO
     : 250;
 
 /**
+ * The specs that open a second browser of their own and drive two live sessions at once.
+ * Each has a project below and nothing else picks them up: run by an ordinary browser
+ * project they would launch a doctor browser per browser engine, three sessions deep into
+ * an account that allows a handful.
+ */
+const liveSpecs = [
+  /live[\\/]full-consultation-with-doctor\.spec\.ts$/,
+  /tibet[\\/]tibet-full-consultation-with-doctor\.spec\.ts$/,
+];
+
+/**
  * See https://playwright.dev/docs/test-configuration.
  */
 export default defineConfig({
@@ -116,25 +127,42 @@ export default defineConfig({
     },
 
     /*
-     * tests/live/ is left to its own project above. The browser projects run everything
-     * else under tests/ — picking the live spec up here as well would mean a second
-     * doctor session against the same account, from a run that never asked for one.
+     * The same two-browser journey against the Tibet centre: browser 1 registers on
+     * /TibetPatientForm and raises the case history, browser 2 is the doctor who joins the
+     * consultation it hands over. It lives with the other Tibet specs but gets a project
+     * of its own for the same reason as the one above — it launches a browser itself, so
+     * it must not be run once per engine.
+     *
+     *   npm run test:tibet-live          (headless)
+     *   npm run test:tibet-live:headed   (both windows on screen, side by side)
+     */
+    {
+      name: 'tibet-live-consultation',
+      testMatch: /tibet[\\/]tibet-full-consultation-with-doctor\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+
+    /*
+     * The two-browser specs are left to their own projects above. The browser projects run
+     * everything else under tests/ — picking one of those up here as well would mean a
+     * second doctor session against the same account, once per engine, from a run that
+     * never asked for one. See liveSpecs.
      */
     {
       name: 'chromium',
-      testIgnore: /live[\\/]/,
+      testIgnore: liveSpecs,
       use: { ...devices['Desktop Chrome'] },
     },
 
     {
       name: 'firefox',
-      testIgnore: /live[\\/]/,
+      testIgnore: liveSpecs,
       use: { ...devices['Desktop Firefox'] },
     },
 
     {
       name: 'webkit',
-      testIgnore: /live[\\/]/,
+      testIgnore: liveSpecs,
       use: { ...devices['Desktop Safari'] },
     },
 

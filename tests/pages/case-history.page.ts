@@ -173,9 +173,21 @@ export class CaseHistoryPage {
         ).toBeVisible({ timeout: 15000 });
 
         await expect(
-            this.page.getByRole('button', { name: 'Save' }),
+            this.saveButton(),
             'The case history form has no Save button'
         ).toBeVisible({ timeout: 15000 });
+    }
+
+    /**
+     * The form's own submit — <input name="Next" value="Save">.
+     *
+     * Matched on the exact name rather than on "Save" alone, because the Tibet build of
+     * this form carries the report-upload modal's "Save Report" and "Save Image" buttons
+     * in its markup as well. A substring match resolves to all three and fails as a
+     * strict-mode violation on a form that is perfectly well open.
+     */
+    private saveButton(): Locator {
+        return this.page.getByRole('button', { name: 'Save', exact: true });
     }
 
     /**
@@ -662,11 +674,16 @@ export class CaseHistoryPage {
         for (const [index, duration] of durations.entries()) {
             const symptomRow = symptomRows.nth(index);
             await expect(symptomRow).toContainText(symptoms[index], { useInnerText: true });
-            // Duration lives in the 4th cell; a selectize keeps its value as text, not as
-            // the input's value, so read the cell rather than the input.
-            await expect(symptomRow.getByRole('cell').nth(3)).toContainText(duration, {
-                useInnerText: true,
-            });
+            // Duration's own cell — the one holding <select name="duration[]"> — rather
+            // than a column index: the row is padded with 5px spacer cells and carries a
+            // "Select Eye" column that only some builds render, so the index the duration
+            // lands on is not the same on every centre's form. A selectize keeps its value
+            // as text, not as the input's value, so the cell is read rather than the input.
+            await expect(
+                symptomRow.getByRole('cell').filter({
+                    has: this.page.locator('select[name="duration[]"]'),
+                })
+            ).toContainText(duration, { useInnerText: true });
         }
 
         return { symptoms, durations };
@@ -769,7 +786,7 @@ export class CaseHistoryPage {
         const formUrl = page.url();
         const alertsBefore = dialogMessages.length;
 
-        await page.getByRole('button', { name: 'Save' }).click();
+        await this.saveButton().click();
 
         // An alert fires synchronously on submit, so if one already arrived the save was
         // cancelled — fail on its message now rather than waiting out a navigation that
