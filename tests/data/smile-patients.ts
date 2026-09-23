@@ -250,21 +250,36 @@ export type SmilePrescriptionData = {
     consultation: ConsultationData;
     /** How many provisional diagnoses this run records (2-3). */
     diagnosisCount: number;
-    /** Set for a female patient, null for a male one. */
+    /** Set for a female patient of 14-49, null for a man and for a child. */
     female: FemaleHealthData | null;
+    /** True for a child under five, who gets the screening sections nobody else does. */
+    underFive: boolean;
+    /**
+     * Mid-upper arm circumference in cm, set only for an under-five. 12.5 and above is
+     * the healthy end of the scale, which is the well child the rest of this data makes.
+     */
+    muac: string | null;
 };
 
 export type SmilePrescriptionOptions = {
     /** Pin the gender instead of drawing it. E2E_SMILE_GENDER=Female|Male does the same. */
     gender?: 'Male' | 'Female';
+    /**
+     * Register a child under five instead of an adult. The age then goes in as months,
+     * and the form shows no gynaecology section whatever the gender is - so `female`
+     * comes back null. The MUAC reading this draws is used only where the form offers the
+     * box; SMILE's division is not one of them.
+     */
+    underFive?: boolean;
 };
 
 export function createSmilePrescription(
     options: SmilePrescriptionOptions = {}
 ): SmilePrescriptionData {
-    // Adults only. Under-fives are registered in months and bring a MUAC reading and a
-    // screening checklist onto this form that the SMILE flow does not cover.
-    const base = createSavePatient({ underFive: false });
+    // An under-five is registered in months: the age box carries min=5 while the unit is
+    // years, and the form clears anything under it. Anyone else is an adult.
+    const underFive = options.underFive ?? false;
+    const base = createSavePatient({ underFive });
     const suffix = Date.now().toString().slice(-8);
 
     const pinned = options.gender ?? process.env['E2E_SMILE_GENDER'];
@@ -279,7 +294,7 @@ export function createSmilePrescription(
     let age = base.age;
     let married = base.married;
 
-    if (gender === 'Female') {
+    if (gender === 'Female' && !underFive) {
         // The form only shows the gynaecology and ANC / PNC sections to a woman of 14-49,
         // so a female patient is drawn from inside that range - and as someone on an ANC
         // or PNC visit, married. Her vitals are redrawn for the new age.
@@ -292,7 +307,7 @@ export function createSmilePrescription(
     return {
         patient: {
             ...base,
-            name: `Smile Rec ${suffix}`,
+            name: `${underFive ? 'Smile Child' : 'Smile Rec'} ${suffix}`,
             parent: `Smile Parent ${suffix.slice(-4)}`,
             gender,
             age,
@@ -307,6 +322,10 @@ export function createSmilePrescription(
         caseHistory,
         consultation: createConsultation(),
         diagnosisCount: randomInt(2, 3),
-        female: gender === 'Female' ? createFemaleHealth(caseHistory) : null,
+        // A child never gets the gynaecology block, whichever gender was drawn: the form
+        // only opens it between 14 and 49.
+        female: gender === 'Female' && !underFive ? createFemaleHealth(caseHistory) : null,
+        underFive,
+        muac: underFive ? (randomInt(125, 165) / 10).toFixed(1) : null,
     };
 }

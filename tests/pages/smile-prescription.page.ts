@@ -25,6 +25,14 @@ export type SmilePrescriptionSummary = {
     classification: string | null;
     /** What the gynaecology and ANC / PNC sections were filled with, null for a man. */
     female: string | null;
+    /** The MUAC and the screening answers, for an under-five. Empty for anyone older. */
+    underFiveScreening: string[];
+    /**
+     * Whether this centre's division is one the form offers the under-5 screening to at
+     * all. False for SMILE, which is why an empty `underFiveScreening` is not a failure
+     * there. See SmilePrescriptionPage.underFiveScreeningApplies().
+     */
+    underFiveScreeningOffered: boolean;
     medicines: MedicineLine[];
     otcMedicine: string | null;
     diagnosticTests: string[];
@@ -97,6 +105,51 @@ export class SmilePrescriptionPage {
         await expect(this.page.locator('div#spinner')).toBeHidden({ timeout: 20000 });
     }
 
+    /**
+     * The Years / Months radio, by whichever id this build of the form spells it with.
+     * PatientForm and the SMILE prescription form do not agree on the name - age_unit_year,
+     * age_unit_years, age_years - so all the spellings are offered and the one the page
+     * actually has is used.
+     */
+    private ageUnitRadio(ageUnit: PatientRegistrationData['ageUnit']): Locator {
+        const ids =
+            ageUnit === 'months'
+                ? ['#age_unit_month', '#age_unit_months', '#age_months']
+                : ['#age_unit_year', '#age_unit_years', '#age_years'];
+
+        return this.page.locator(ids.join(', ')).first();
+    }
+
+    /**
+     * Re-fires the age unit's handlers now that the age itself is in the box.
+     *
+     * The form works out what to show from the age and its unit together, but the unit is
+     * a radio that is set before the age is typed, so its change handler ran while the age
+     * box was still empty and a child came out looking like nobody in particular - no MUAC
+     * reading, no under-5 screening checklist. Checking the radio a second time is not
+     * enough: a radio that is already checked fires no change event of its own, so the
+     * events are dispatched by hand, on the radio and then on the age box.
+     *
+     * Best effort by design - it only nudges handlers that may not exist on every build,
+     * so a page that ignores the events is not a failure here. Whether the sections
+     * actually came up is judged where they are filled, in fillUnderFiveScreening().
+     */
+    private async reapplyAgeUnit(ageUnit: PatientRegistrationData['ageUnit']): Promise<void> {
+        const radio = this.ageUnitRadio(ageUnit);
+
+        if ((await radio.count()) === 0) {
+            return;
+        }
+
+        await this.checkRadio(radio);
+        await radio.dispatchEvent('click').catch(() => undefined);
+        await radio.dispatchEvent('change').catch(() => undefined);
+
+        const age = this.page.locator('#patient_age');
+        await age.dispatchEvent('change').catch(() => undefined);
+        await age.dispatchEvent('blur').catch(() => undefined);
+    }
+
     /** Checks a radio and keeps at it until the page lets it stay checked. */
     private async checkRadio(radio: Locator): Promise<void> {
         await expect(async () => {
@@ -111,9 +164,12 @@ export class SmilePrescriptionPage {
      */
     async fill(
         data: SmilePrescriptionData,
-        options: { skipAadhaar?: boolean } = {}
+        options: { skipAadhaar?: boolean; module?: string } = {}
     ): Promise<SmilePrescriptionSummary> {
-        const module = 'SMILE Prescription';
+        // A run that fills this form more than once - one patient per gender, say - names
+        // its own module so each pass gets its own block of rows in the report instead of
+        // all of them landing on one. See tests/smile/smile-gender-age-matrix.spec.ts.
+        const module = options.module ?? 'SMILE Prescription';
         const { patient, caseHistory, consultation, female } = data;
 
         await moduleCase(
@@ -128,6 +184,16 @@ export class SmilePrescriptionPage {
         await moduleCase(module, 'Record the vitals and allergies', () =>
             this.caseHistory.recordVitals(caseHistory)
         );
+        // A child under five gets the MUAC box and the screening checklist - on the
+        // divisions the form offers them to, which SMILE is not one of.
+        const underFiveScreeningOffered = data.underFive
+            ? await this.underFiveScreeningApplies()
+            : false;
+        const underFiveScreening = data.underFive
+            ? await moduleCase(module, 'Record the MUAC and the under-5 screening', () =>
+                  this.fillUnderFiveScreening(data.muac, underFiveScreeningOffered)
+              )
+            : [];
         // A woman of 14-49 gets two more sections, straight under her details.
         const femaleSummary = female
             ? await moduleCase(module, 'Fill the gynaecology details', async () => {
@@ -188,6 +254,8 @@ export class SmilePrescriptionPage {
             provisionalDiagnoses,
             classification,
             female: femaleSummary,
+            underFiveScreening,
+            underFiveScreeningOffered,
             medicines,
             otcMedicine,
             diagnosticTests,
@@ -206,9 +274,7 @@ export class SmilePrescriptionPage {
         await page.locator('#patient_name').fill(patient.name);
         await page.locator('#parent').fill(patient.parent);
         await this.checkRadio(page.locator(`input[name="sex"][value="${patient.gender}"]`));
-        await this.checkRadio(
-            page.locator(patient.ageUnit === 'months' ? '#age_unit_month' : '#age_unit_year')
-        );
+        await this.checkRadio(this.ageUnitRadio(patient.ageUnit));
 
         // The vitals unlock on the age box's change event, which fires on blur.
         const age = page.locator('#patient_age');
@@ -218,6 +284,12 @@ export class SmilePrescriptionPage {
             page.locator('input[name="weight"]'),
             'Entering the age did not unlock the vitals'
         ).not.toHaveAttribute('readonly', /.*/, { timeout: 5000 });
+
+        // The unit went in before the age did, so whatever the form hangs off the unit -
+        // the MUAC box and the under-5 checklist among it - decided on an empty age box.
+        // Now that both are in, the handlers are run again with the pair of them. See
+        // reapplyAgeUnit().
+        await this.reapplyAgeUnit(patient.ageUnit);
 
         await this.checkRadio(page.locator(patient.married ? '#marriedy' : '#marriedn'));
         await page.locator('#mobile').fill(patient.mobile);
@@ -264,6 +336,152 @@ export class SmilePrescriptionPage {
         expect(village, "The village dropdown offered nothing to pick").not.toBeNull();
 
         return village;
+    }
+
+    /**
+     * Whether this form offers the under-5 screening to this centre at all.
+     *
+     * It is the page's own gate, read back rather than guessed at. Both handlers that
+     * would bring the MUAC row out - the one on the age box and the one on the age unit -
+     * wrap the call in the same condition:
+     *
+     *     if ((divisionID != 5 && divisionID != 40 && patientDivision != "5" &&
+     *          patientDivision != "40") || userType == 1) { LoadMUAC(); }
+     *
+     * On the SMILE centre the page is served with divisionID 5 and userType 8, so the
+     * gate is shut and LoadMUAC() never runs, whatever the age says. changeU5() skips the
+     * screening questions for division 5 in the same way, and the checklist markup
+     * (#u5div) is not rendered on this page at all.
+     *
+     * A centre the gate is open for is a different form, and there an under-five with no
+     * MUAC box is a real failure - which is why this is asked rather than assumed.
+     */
+    async underFiveScreeningApplies(): Promise<boolean> {
+        return this.page
+            .evaluate(() => {
+                const scope = window as unknown as Record<string, unknown>;
+                const value = (name: string): string => {
+                    const global = scope[name];
+                    if (global !== undefined && global !== null) {
+                        return String(global);
+                    }
+                    const field = document.querySelector<HTMLInputElement>(`#${name}`);
+                    return field ? field.value : '';
+                };
+
+                const division = value('divisionID') || value('centreDivision');
+                const patientDivision = value('patientDivision');
+                const userType = value('userType');
+                const barred = (one: string) => one === '5' || one === '40';
+
+                return (!barred(division) && !barred(patientDivision)) || userType === '1';
+            })
+            .catch(() => true);
+    }
+
+    /**
+     * The under-five parts of the form: the mid-upper arm circumference reading and the
+     * "Checklist for screening of under-5 children for major childhood illnesses".
+     *
+     * `offered` is underFiveScreeningApplies(), and it decides what an empty form means.
+     * On a centre the screening belongs to, a child who was shown neither part is a
+     * failure - the usual cause being that the form did not take the patient as an
+     * under-five, and the required answers it is still holding would otherwise surface
+     * much later as a bare timeout on Save. On SMILE, where the form withholds both parts
+     * by division, there is nothing to fill and nothing wrong, and the run says so in a
+     * line of its own rather than failing.
+     *
+     * The checklist, where it is shown, is the same section the case history form
+     * carries, so it is answered by CaseHistoryPage.fillUnderFiveChecklist() rather than
+     * by a second copy of that code - every question at its first (healthy) option, and
+     * no complaint boxes ticked.
+     */
+    async fillUnderFiveScreening(muac: string | null, offered = true): Promise<string[]> {
+        const page = this.page;
+
+        // The MUAC box is spelt differently between builds of the form, so it is looked for
+        // by id, by field name, and finally by the row whose label names it.
+        const muacBox = page
+            .locator('#muac, input[name="muac"], input[name="MUAC"], input[name="Muac"]')
+            .or(
+                page
+                    .getByRole('row')
+                    .filter({ hasText: /MUAC|Mid[-\s]?Upper Arm/i })
+                    .locator('input[type="text"], input[type="number"]')
+            )
+            .first();
+
+        const fillWhateverIsShown = async (waitForMuac: number): Promise<string[]> => {
+            const recorded: string[] = [];
+
+            if (muac && (await isVisibleWithin(muacBox, waitForMuac))) {
+                await muacBox.fill(muac);
+                await expect(muacBox, 'The MUAC reading did not stay in the box').toHaveValue(muac);
+                recorded.push(`MUAC: ${muac} cm`);
+            }
+
+            recorded.push(...(await this.caseHistory.fillUnderFiveChecklist()));
+
+            return recorded;
+        };
+
+        // A centre the screening is withheld from is not kept waiting for a box that is
+        // never coming - it is looked for once, briefly, in case a build changes its mind.
+        let recorded = await fillWhateverIsShown(offered ? 5000 : 1000);
+
+        if (recorded.length === 0 && offered) {
+            // Nothing came up. The form reads the age and its unit together but only when
+            // the unit changes, so put the pair in front of its handlers once more and
+            // look again before calling this a failure. See reapplyAgeUnit().
+            await this.reapplyAgeUnit('months');
+            recorded = await fillWhateverIsShown(10000);
+
+            expect(
+                recorded,
+                'The patient was entered as an under-five but the form showed neither a ' +
+                    `MUAC box nor the under-5 screening checklist - ${await this.describeUnderFive()}`
+            ).not.toHaveLength(0);
+        }
+
+        return recorded;
+    }
+
+    /**
+     * Why the under-five sections are missing, in the words of the page itself, so a
+     * failure names the form's state rather than leaving it to be guessed at.
+     */
+    private async describeUnderFive(): Promise<string> {
+        const age = await this.describeAge();
+        const found = await this.page
+            .evaluate(() => {
+                const row = document.querySelector<HTMLElement>('#muacRow, #muac');
+                return {
+                    muac: !row
+                        ? 'no MUAC field on the page'
+                        : row.offsetParent
+                          ? 'MUAC shown'
+                          : 'MUAC present but hidden',
+                    checklist: document.querySelector('#u5div')
+                        ? 'checklist present'
+                        : 'no under-5 checklist on the page',
+                };
+            })
+            .catch(() => null);
+
+        return found ? `${age}; ${found.muac}; ${found.checklist}` : age;
+    }
+
+    /** What the age row is actually showing, for a failure message to name. */
+    private async describeAge(): Promise<string> {
+        const age = await this.page
+            .locator('#patient_age')
+            .inputValue()
+            .catch(() => '(unreadable)');
+        const months = await this.ageUnitRadio('months')
+            .isChecked()
+            .catch(() => false);
+
+        return `age ${age} with the unit on ${months ? 'Months' : 'Years'}`;
     }
 
     /**
