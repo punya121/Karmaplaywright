@@ -60,13 +60,39 @@ export async function moduleCase<T>(
     return test.step(moduleCaseTitle(module, title), body);
 }
 
+export type RunModuleCasesOptions = {
+    /**
+     * Keep going after a stage fails, instead of stopping the journey there.
+     *
+     * Off by default, which is what a journey wants: a consultation whose
+     * registration failed has no patient for the case history to be about, so
+     * every stage after it would fail for a reason that is not its own.
+     *
+     * A sweep is the opposite. Its stages are independent screens, and a run
+     * that stopped at the first broken one would report that screen and say
+     * nothing about the twelve behind it — one bug per run, when the whole
+     * point is to find them all in one pass. A stage that throws is still
+     * reported as Failed (the step carries its own error whether or not the
+     * caller catches it), so the report is the same either way; only the stages
+     * after it differ, and they run.
+     */
+    continueOnFailure?: boolean;
+};
+
 /**
  * Runs a journey's stages in order and declares the whole list before the first
  * one starts, so a stage that never ran is still reported. The declaration is an
  * annotation rather than anything clever, because it has to survive the test that
  * fails half way through it.
+ *
+ * Returns the errors it swallowed, which is empty unless `continueOnFailure` is
+ * on. The caller decides what to do with them — a sweep fails at the end with all
+ * of them named, rather than at the first one.
  */
-export async function runModuleCases(cases: ModuleCase[]): Promise<void> {
+export async function runModuleCases(
+    cases: ModuleCase[],
+    options: RunModuleCasesOptions = {},
+): Promise<Error[]> {
     test.info().annotations.push({
         type: MODULE_PLAN_ANNOTATION,
         description: JSON.stringify(
@@ -74,7 +100,23 @@ export async function runModuleCases(cases: ModuleCase[]): Promise<void> {
         ),
     });
 
+    const failures: Error[] = [];
+
     for (const { module, title, run } of cases) {
-        await moduleCase(module, title, run);
+        if (!options.continueOnFailure) {
+            await moduleCase(module, title, run);
+            continue;
+        }
+
+        try {
+            await moduleCase(module, title, run);
+        } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            failure.message = `${module} :: ${title}
+${failure.message}`;
+            failures.push(failure);
+        }
     }
+
+    return failures;
 }
