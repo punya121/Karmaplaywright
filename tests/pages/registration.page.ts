@@ -66,12 +66,29 @@ export class RegistrationPage {
         return false;
     }
 
+    /**
+     * Age Input Type is a pair: "Date of Birth", or "Age (in Years) [For patients above
+     * 5 years]". An under-five is registered by date of birth - picking it unhides
+     * #dob_row, a native date input - and everyone else by a number of years.
+     */
+    async fillDateOfBirth(dob: string): Promise<void> {
+        const dobRadio = this.page.locator('#age_dob');
+        // The radio's handler shows the row; a click that lands before it is bound
+        // leaves the row hidden, so retry until the date input is on screen.
+        await expect(async () => {
+            await dobRadio.check({ force: true, timeout: 2000 });
+            await expect(this.page.locator('#dob_input')).toBeVisible({ timeout: 1000 });
+        }).toPass({ timeout: 15000 });
+
+        await this.page.locator('#dob_input').fill(dob);
+        await expect(this.page.locator('#dob_input')).toHaveValue(dob);
+    }
+
     async fillAge(age: string, ageUnit: PatientRegistrationData['ageUnit']): Promise<void> {
-        const unitControl =
-            ageUnit === 'months'
-                ? this.page.locator('#age_months')
-                : this.page.locator('#age_years');
-        await unitControl.click();
+        if (ageUnit !== 'years') {
+            throw new Error(`PatientForm takes an age in years only; register a ${age} ${ageUnit} old by date of birth`);
+        }
+        await this.page.locator('#age_years').click();
 
         const ageInput = this.page.locator('#patient_age');
         await this.assertAgeWithinMinMax(age, ageInput);
@@ -153,7 +170,11 @@ export class RegistrationPage {
     async fillPatient(data: PatientRegistrationData, options: FillPatientOptions): Promise<void> {
         await this.page.locator('#patient_name').fill(data.name);
         await this.page.locator('#parent').fill(data.parent);
-        await this.fillAge(data.age, data.ageUnit);
+        if (data.dob) {
+            await this.fillDateOfBirth(data.dob);
+        } else {
+            await this.fillAge(data.age, data.ageUnit);
+        }
         await this.fillGender(data.gender);
         await this.fillMaritalStatus(data.married);
 

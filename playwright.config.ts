@@ -28,6 +28,7 @@ const slowMo = process.env.E2E_SLOW_MO
  */
 const liveSpecs = [
   /live[\\/]full-consultation-with-doctor\.spec\.ts$/,
+  /live[\\/]live-consultation-gender-age\.spec\.ts$/,
   /tibet[\\/]tibet-full-consultation-with-doctor\.spec\.ts$/,
 ];
 
@@ -123,6 +124,20 @@ export default defineConfig({
     {
       name: 'live-consultation',
       testMatch: /live[\\/]full-consultation-with-doctor\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+
+    /*
+     * The live journey above three times over: a male patient, a female patient and a
+     * child under five, one after the other in one worker. Its own project for the same
+     * reason - it launches the doctor's browser itself.
+     *
+     *   npm run test:live-gender-age          (headless)
+     *   npm run test:live-gender-age:headed   (both windows on screen, side by side)
+     */
+    {
+      name: 'live-consultation-gender-age',
+      testMatch: /live[\\/]live-consultation-gender-age\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
 

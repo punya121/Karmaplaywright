@@ -115,6 +115,12 @@ export type PatientRegistrationData = {
     parent: string;
     age: string;
     ageUnit: 'years' | 'months';
+    /**
+     * Date of birth as YYYY-MM-DD, set for under-fives only. PatientForm's "Age (in
+     * Years)" option is for patients above five, so a child is registered by date of
+     * birth; `age` and `ageUnit` stay alongside it for the reports.
+     */
+    dob?: string;
     village: string;
     gender: string;
     married: boolean;
@@ -130,24 +136,41 @@ export type PatientOptions = {
      * E2E_UNDER_FIVE=1 turns it on for a whole run without touching the spec.
      */
     underFive?: boolean;
+    /**
+     * The patient's gender. Male unless asked otherwise, which is what every spec
+     * registered before this option existed.
+     */
+    gender?: 'Male' | 'Female';
 };
+
+/** Today's date `months` months back, as YYYY-MM-DD, pulled back to month end where needed. */
+function dateMonthsAgo(months: number): string {
+    const today = new Date();
+    const target = new Date(today.getFullYear(), today.getMonth() - months, 1);
+    const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(today.getDate(), lastDay));
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
+}
 
 export function createSavePatient(options: PatientOptions = {}): PatientRegistrationData {
     const suffix = Date.now().toString().slice(-8);
     const underFive = options.underFive ?? !!process.env['E2E_UNDER_FIVE'];
+    const gender = options.gender ?? 'Male';
 
-    // PatientForm's age field carries min=5 when the unit is years — under-fives are
-    // registered in months — so a run that drew 1-4 in years could never be saved.
+    // PatientForm only takes an age in years above five (the field carries min=5) —
+    // under-fives are registered by date of birth, drawn here as 6-59 months ago.
     const ageMonths = underFive ? randomInt(6, 59) : 0;
     const ageYears = underFive ? ageMonths / 12 : randomInt(5, 80);
 
     return {
-        name: `Abhinav Rec ${suffix}`,
+        name: `${gender === 'Female' ? 'Ananya' : 'Abhinav'} Rec ${suffix}`,
         parent: 'Rec',
         age: String(underFive ? ageMonths : ageYears),
         ageUnit: underFive ? 'months' : 'years',
+        dob: underFive ? dateMonthsAgo(ageMonths) : undefined,
         village: 'Dhaula',
-        gender: 'Male',
+        gender,
         // Marital status has to follow the age too, or a child gets registered married.
         married: ageYears >= 21,
         mobile: `9${suffix.padStart(9, '0').slice(-9)}`,
